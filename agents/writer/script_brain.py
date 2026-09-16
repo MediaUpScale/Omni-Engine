@@ -476,6 +476,13 @@ def draft_to_script(
         "scene_duration_s": beat_s,
         "spoken_word_ceiling": lofi_cfg.beat_word_ceiling(beat_s),
     }
+    if brief is not None and (brief.meta or {}).get("narrative_anchor"):
+        script["narrative_harness"] = {
+            "mode": str((brief.meta or {}).get("narrative_mode") or ""),
+            "use_philosophy": bool((brief.meta or {}).get("use_philosophy")),
+            "anchor": str((brief.meta or {}).get("narrative_anchor") or ""),
+            "single_conflict": str((brief.meta or {}).get("single_conflict") or ""),
+        }
     if brief is not None and brief.mode == "quote":
         script["seed_quote"] = brief.seed_quote
         script["seed_attribution"] = brief.seed_attribution

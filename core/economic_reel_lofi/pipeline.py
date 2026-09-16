@@ -2132,6 +2132,11 @@ def generate_and_qa_scene(
                 prompt_i = _retry_prompt_extras(prompt_i, attempt, last_fix)
         elif attempt > 1:
             prompt_i = _retry_prompt_extras(prompt_i, attempt, last_fix)
+        lighting_guard = " ".join(
+            str(row.get("lighting_prompt_guard") or "").split()
+        )
+        if lighting_guard and lighting_guard.lower() not in prompt_i.lower():
+            prompt_i = f"{prompt_i} {lighting_guard}"
         from core.economic_reel_lofi.licensed_objects import scrub_assembled_prompt
 
         if str(row.get("visual_source") or "") == "writer_single_pass":
@@ -2658,6 +2663,17 @@ def _generate_validated_script(
     last_errors: list[str] = []
     last_script: dict[str, Any] | None = None
     mode = str(writer_mode or "emotional").strip().lower()
+    from agents.writer.writer_brief import get_narrative_harness
+
+    narrative_harness = (
+        get_narrative_harness(
+            module,
+            theme=str(theme_row.get("theme") or ""),
+            subtheme=str(theme_row.get("subtheme") or ""),
+        )
+        if mode != "paraphrase"
+        else {}
+    )
     if not strict_judge:
         from agents.writer.freeform_writer import write_draft
         from agents.writer.script_brain import draft_to_script
@@ -2666,6 +2682,7 @@ def _generate_validated_script(
         common = {
             "duration_s": float(duration_s),
             "beat_duration_s": lofi_cfg.beat_duration_s(),
+            **narrative_harness,
         }
         details = [
             str(item.get("detail") or "")
@@ -2728,6 +2745,19 @@ def _generate_validated_script(
         from core.economic_reel_lofi.niche_presets import inject_prompt_fields
 
         inject_prompt_fields(script)
+        celestial_scenes = [
+            int(value) for value in (script.get("celestial_disc_scenes") or [])
+        ]
+        if not (1 <= len(celestial_scenes) <= 2) or any(
+            scene not in {1, 8} for scene in celestial_scenes
+        ):
+            raise ValueError(
+                f"invalid celestial lighting budget: {celestial_scenes}"
+            )
+        print(
+            f"[LOFI lighting] celestial_budget={len(celestial_scenes)} "
+            f"scenes={celestial_scenes} non_disc={8 - len(celestial_scenes)}"
+        )
         script["script_ship_ok"] = True
         script["script_ship_errors"] = []
         script["writer_diagnostics"] = {
@@ -2770,6 +2800,7 @@ def _generate_validated_script(
             common = {
                 "duration_s": float(duration_s),
                 "beat_duration_s": lofi_cfg.beat_duration_s(),
+                **narrative_harness,
             }
             if mode == "emotional":
                 brief = WriterBrief.from_emotional(
@@ -3206,6 +3237,9 @@ def _assemble_stage3_prompts(
 
     niche_key = str(script.get("niche") or script.get("module") or "relationship")
     preset = get_niche_preset(niche_key)
+    celestial_scenes = frozenset(
+        int(value) for value in (script.get("celestial_disc_scenes") or [])
+    )
     writer_concepts = [
         " ".join(str(row.get("visual_concept") or "").split()) for row in lines
     ]
@@ -3214,6 +3248,7 @@ def _assemble_stage3_prompts(
             positive, negative = build_flux_prompt(
                 concept,
                 int(row.get("scene") or i),
+                celestial_scenes=celestial_scenes,
             )
             row["final_positive_prompt"] = positive
             row["visual_prompt"] = row["final_positive_prompt"]

@@ -833,42 +833,42 @@
       {
         "detail": "two umbrellas on a corner, not touching",
         "sensory_type": "object",
-        "last_used_date": "2026-09-10"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a suitcase standing alone on the platform",
         "sensory_type": "object",
-        "last_used_date": "2026-09-10"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an unused place setting at the long table",
         "sensory_type": "object",
-        "last_used_date": "2026-09-10"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a closed bedroom door in the apartment hallway",
         "sensory_type": "object",
-        "last_used_date": "2026-08-26"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the radio playing to an empty room",
         "sensory_type": "sound",
-        "last_used_date": "2026-08-26"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "rain streaking an empty window",
         "sensory_type": "object",
-        "last_used_date": "2026-08-26"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an unmade bed left empty",
         "sensory_type": "object",
-        "last_used_date": "2026-08-26"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an open doorway with no one in it",
         "sensory_type": "object",
-        "last_used_date": "2026-08-26",
+        "last_used_date": "2026-09-12",
         "performance_score": null
       }
     ],
@@ -1055,42 +1055,42 @@
       {
         "detail": "a coat still on the hook by the door",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "two coats hanging on one hook",
         "sensory_type": "object",
-        "last_used_date": "2026-08-22"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a folded sweater left in the bedroom chair",
         "sensory_type": "object",
-        "last_used_date": "2026-08-22"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a photograph turned face-down on the sill",
         "sensory_type": "object",
-        "last_used_date": "2026-08-22"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an empty bench on the park path",
         "sensory_type": "place",
-        "last_used_date": "2026-08-22"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the worn coat lifted, then put back",
         "sensory_type": "gesture",
-        "last_used_date": "2026-08-22"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "tea cooling beside the unturned photo",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an empty train platform at night",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11",
+        "last_used_date": "2026-09-12",
         "performance_score": null
       }
     ],
@@ -1254,37 +1254,37 @@
       {
         "detail": "untied shoes waiting on the stoop at dawn",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the kettle just starting before sunrise",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a work bag still by the door",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "cold water splashed on a face at the sink",
         "sensory_type": "gesture",
-        "last_used_date": "2026-08-24"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the same weekly pass taken from the coat",
         "sensory_type": "object",
-        "last_used_date": "2026-08-24"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "laces pulled tight with both hands",
         "sensory_type": "gesture",
-        "last_used_date": "2026-08-24"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the front door opened onto early light",
         "sensory_type": "place",
-        "last_used_date": "2026-08-24"
+        "last_used_date": "2026-09-12"
       }
     ],
     "hooks": [

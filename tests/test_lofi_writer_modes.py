@@ -47,10 +47,10 @@ def test_theme_compose_prompt_is_duration_aware() -> None:
     assert "exactly 15 spoken lines" in instruction
     assert "Each line has roughly 3.0s" in instruction
     assert "exactly 15 spoken lines for 45s" in user
-    assert "TARGETS 7 words" in user
+    assert "TARGETS 6 words" in user
     assert "HOOK LINE (beat 1)" in instruction
     assert "HOOK LINE (beat 1)" in user
-    assert "target 7" in instruction and "12 words" in instruction
+    assert "target 6" in instruction and "hard maximum 7 words" in instruction
     assert "Only three writing priorities" in instruction
     assert "ANCHOR OBJECT" not in user
     assert "ASSIGNED PATTERN" not in user
@@ -68,7 +68,7 @@ def test_quote_brief_requires_four_part_parable_arc() -> None:
     assert "PARABLE ARC" in block
     assert "workable equilibrium" in block
     assert "HOOK LINE (beat 1)" in block
-    assert "target 7" in block and "12 words" in block
+    assert "target 4" in block and "6 words" in block
 
 
 def test_paraphrase_bank_and_brief() -> None:
@@ -457,7 +457,7 @@ def test_hook_line_brevity_is_writer_target_not_still_hold() -> None:
     from agents.writer.writer_brief import WriterBrief
 
     clause = lofi_cfg.hook_line_brevity_clause()
-    assert "target 7" in clause and "12 words" in clause
+    assert "target 4" in clause and "6 words" in clause
     assert "roughly 3s" in clause
     assert "still duration follows the rendered VO" in clause
     theme = WriterBrief.from_theme(theme="healing").assignment_block()
@@ -465,7 +465,8 @@ def test_hook_line_brevity_is_writer_target_not_still_hold() -> None:
     contract = _output_contract(
         WriterBrief.from_theme(theme="healing", meta={"duration_s": 27})
     )
-    assert "Every scene, including scene 1, contains 7–11" in contract
+    assert "Every scene contains exactly 4–6" in contract
+    assert "at most 48 words" in contract
 
 
 def test_slot_duration_follows_measured_vo_not_estimate() -> None:

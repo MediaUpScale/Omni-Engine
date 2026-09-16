@@ -72,7 +72,10 @@ STYLE = StyleConfig(
         "photorealistic, photograph, 3d render, cgi, dslr, realistic skin, smooth digital airbrush, "
         "barefoot, bare feet, deformed feet, extra toes, deformed hands, extra fingers, "
         "flat vector, corporate clipart, sticker, 2d flash, "
-        "border, white border, frame, margin, text, watermark, logo"
+        "border, white border, frame, margin, text, watermark, logo, "
+        "toilet, urinal, bathroom, restroom, commode, porcelain toilet, "
+        "bed outdoors, furniture on street, surreal placement, mattress in alley, "
+        "lying on floor, crawling, prone body, melted limbs, anatomical glitches"
     ),
     palettes={
         "WARM": "Nostalgic warm palette: dusty rose, burnt orange, golden hour sunset, rich amber.",

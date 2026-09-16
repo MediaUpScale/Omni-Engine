@@ -910,13 +910,14 @@ def render_logo_layer(
     opacity: float,
     scale: float,
     bottom_px: int = 48,
+    size_multiplier: float = 1.0,
+    trim_transparent_padding: bool = False,
 ) -> np.ndarray | None:
     """
-    Composite the channel PNG at its native width/height.
+    Composite the channel PNG on the final reel canvas.
 
-    ``scale`` is accepted for caller compatibility and is unused. Size comes
-    from the file on disk so a swapped final-size logo does not need a
-    constant retune.
+    ``scale`` remains accepted for caller compatibility. ``size_multiplier``
+    supports explicit per-channel calibration relative to the PNG's own size.
     """
     if not logo_path or not Path(logo_path).is_file():
         return None
@@ -953,9 +954,22 @@ def render_logo_layer(
             vis[y, x + 1] = True
             stack.append((y, x + 1))
     logo = PILImage.fromarray(arr)
-    # Composite at the file's own pixels. The PNG on disk is the final size;
-    # do not scale to a constant or to REEL_WIDTH * logo_scale.
+    # Trim transparent canvas padding before calibration so multiplier and
+    # bottom inset operate on the visible badge, not invisible PNG margins.
+    if trim_transparent_padding:
+        visible_bbox = logo.getchannel("A").getbbox()
+        if visible_bbox:
+            logo = logo.crop(visible_bbox)
+    # Scale only through an explicit channel calibration, never relative to
+    # frame width. This keeps replacement logo assets predictable.
     _ = scale
+    size_multiplier = max(0.1, float(size_multiplier))
+    if abs(size_multiplier - 1.0) > 1e-6:
+        resized = (
+            max(1, round(logo.width * size_multiplier)),
+            max(1, round(logo.height * size_multiplier)),
+        )
+        logo = logo.resize(resized, PILImage.Resampling.LANCZOS)
     native_w, native_h = logo.size
     r, g, b, a = logo.split()
     a = a.point(lambda v: int(v * max(0.05, min(1.0, opacity))))
@@ -966,8 +980,8 @@ def render_logo_layer(
     y = lofi_cfg.REEL_HEIGHT - native_h - inset
     canvas.paste(logo, (x, y), logo)
     print(
-        f"[LOFI assemble] logo={Path(logo_path).name} native={native_w}x{native_h} "
-        f"no_resize=1 pos=bottom_center y={y} inset={inset} "
+        f"[LOFI assemble] logo={Path(logo_path).name} rendered={native_w}x{native_h} "
+        f"size_multiplier={size_multiplier:.2f} pos=bottom_center y={y} inset={inset} "
         f"center_from_bottom={inset + native_h / 2:.0f} every_scene=True"
     )
     return np.array(canvas)
@@ -978,6 +992,7 @@ def audit_watermark_native_size(
     *,
     logo_path: Path | None,
     use_text: bool,
+    expected_scale: float = 1.0,
 ) -> dict[str, Any]:
     """
     Confirm the watermark lives on the 1080×1920 canvas at file-native pixels.
@@ -997,6 +1012,7 @@ def audit_watermark_native_size(
         "composited_on_reel_canvas": 0,
         "not_baked_into_still": 1,
         "use_text_watermark": int(bool(use_text)),
+        "expected_logo_scale": float(expected_scale),
         "reason": "",
     }
     if logo_layer is None:
@@ -1042,13 +1058,15 @@ def audit_watermark_native_size(
         return rec
     rec["painted_w"] = int(xs.max() - xs.min() + 1)
     rec["painted_h"] = int(ys.max() - ys.min() + 1)
-    # Flood-fill knockout can shrink the bbox a few px vs the file.
-    w_ok = rec["painted_w"] <= rec["logo_file_w"] + 2
-    h_ok = rec["painted_h"] <= rec["logo_file_h"] + 2
-    not_upscaled = rec["painted_w"] < int(rec["logo_file_w"] * 1.4)
-    if w_ok and h_ok and not_upscaled:
+    # Flood-fill knockout can shrink the bbox a few px vs the calibrated size.
+    expected_w = rec["logo_file_w"] * max(0.1, float(expected_scale))
+    expected_h = rec["logo_file_h"] * max(0.1, float(expected_scale))
+    w_ok = rec["painted_w"] <= round(expected_w) + 2
+    h_ok = rec["painted_h"] <= round(expected_h) + 2
+    not_overscaled = rec["painted_w"] < int(expected_w * 1.08) + 2
+    if w_ok and h_ok and not_overscaled:
         rec["watermark_native_size"] = 1
-        rec["reason"] = "png_native_on_reel_canvas"
+        rec["reason"] = "png_calibrated_on_reel_canvas"
     else:
         rec["reason"] = (
             f"painted {rec['painted_w']}x{rec['painted_h']} vs file "
@@ -1691,6 +1709,10 @@ def assemble_lofi_reel(
             opacity=float(cfg.get("logo_opacity", 0.85)),
             scale=float(cfg.get("logo_scale", 0.14)),
             bottom_px=int(cfg.get("logo_bottom_px", 48)),
+            size_multiplier=float(cfg.get("logo_size_multiplier", 1.0)),
+            trim_transparent_padding=bool(
+                cfg.get("trim_logo_transparent_padding", False)
+            ),
         )
         if logo_layer is None:
             print(f"[LOFI assemble] WARN logo missing path={logo_path}")
@@ -1701,6 +1723,7 @@ def assemble_lofi_reel(
         if not cfg.get("use_text_watermark", True)
         else None,
         use_text=bool(cfg.get("use_text_watermark", True)),
+        expected_scale=float(cfg.get("logo_size_multiplier", 1.0)),
     )
     if audit_out is not None:
         audit_out.update(wm_audit)

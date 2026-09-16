@@ -231,38 +231,42 @@
       {
         "detail": "a folded blanket on the sofa",
         "sensory_type": "object",
-        "last_used_date": "2026-09-10"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an open doorway with no one in it",
         "sensory_type": "object",
-        "last_used_date": "2026-09-10"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a child's drawing held up to the lamp",
         "sensory_type": "object",
-        "last_used_date": "2026-09-10"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the sofa cushion pulled close",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "socks on the living room rug",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the TV remote left untouched",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a shared blanket across both laps",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a kettle that just clicked off",
         "sensory_type": "object",
-        "last_used_date": null,
+        "last_used_date": "2026-09-12",
         "performance_score": null
       }
     ],
@@ -411,38 +415,42 @@
       {
         "detail": "a night lamp on the bedside table",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a stuffed bear tucked under the blanket",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "small shoes lined up by the bed",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the hallway lamp dimmed",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "rain streaking an empty window",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the same storybook on the pillow",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "curtains pulled against the street",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an open doorway with no one in it",
         "sensory_type": "object",
-        "last_used_date": null,
+        "last_used_date": "2026-09-12",
         "performance_score": null
       }
     ],
@@ -506,38 +514,42 @@
       {
         "detail": "an unmade bed left empty",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "dishes left in the sink till morning",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "a folded towel on the bathroom counter",
         "sensory_type": "object",
-        "last_used_date": "2026-09-11"
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the same chair pulled out at dawn",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "an unopened letter on the fridge",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "socks on the bedroom floor",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "the kettle clicking off unwatched",
-        "sensory_type": "object"
+        "sensory_type": "object",
+        "last_used_date": "2026-09-12"
       },
       {
         "detail": "rain streaking an empty window",
         "sensory_type": "object",
-        "last_used_date": null,
+        "last_used_date": "2026-09-12",
         "performance_score": null
       }
     ],

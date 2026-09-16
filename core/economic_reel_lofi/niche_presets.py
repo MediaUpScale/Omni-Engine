@@ -7,6 +7,7 @@ active style module owns the final rendering vocabulary.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,22 @@ RELATIONSHIP_LOCATION_ANCHOR = (
 )
 PARENTING_LOCATION_ANCHOR = (
     "a story-specific lived-in environment shared by parent and child"
+)
+
+CAMERA_STAGING_BY_SCENE: dict[int, str] = {
+    1: "wide establishing landscape or exterior, human subject small and upright",
+    2: "architectural interior framing, human subject properly seated or standing",
+    3: "tactile environmental prop detail in realistic context",
+    4: "close-up side profile in dramatic light, upright head and natural anatomy",
+    5: "motion transit through a door, platform, or corridor, subject upright",
+    6: "looking through rain or reflective glass, subject upright behind the glass",
+    7: "dynamic walking silhouette with natural upright limbs",
+    8: "expansive panoramic closure, upright subject grounded in the landscape",
+}
+_UPRIGHT_ANATOMY_GUARD = (
+    "ANATOMY CONTRACT: every human is upright—standing, walking, seated properly "
+    "on furniture, or tucked into bed with visible pillows; nobody lies on a "
+    "floor, rug, street, or doorstep, and nobody crawls or appears prone"
 )
 
 
@@ -156,6 +173,34 @@ _CAMERA_ARC = (
     "quiet closing detail",
 )
 
+DEFAULT_CELESTIAL_DISC_SCENES = frozenset({8})
+_NON_CELESTIAL_PALETTES = {
+    "WARM": (
+        "Nostalgic practical-light palette: dusty rose, terracotta, cream paper, "
+        "and amber tungsten illumination"
+    ),
+    "COLD": (
+        "Atmospheric practical-light palette: deep cobalt, pale slate grey, "
+        "and restrained amber tungsten accents"
+    ),
+    "CONTRAST": (
+        "High-contrast practical-light palette: warm amber lamps against deep "
+        "indigo shadow planes"
+    ),
+}
+_NON_CELESTIAL_LIGHTING = {
+    1: "a wet exterior with one practical amber lantern",
+    3: "rain on window glass with distant city lights",
+    4: "a single warm desk lamp in a dark room",
+    5: "shadows in an unlit hallway",
+    6: "a wet street with one practical lantern",
+    7: "a wet walking route under one practical amber streetlamp",
+}
+_CELESTIAL_NEGATIVE = (
+    "sun disc, moon disc, glowing celestial circle, celestial orb, eclipse, "
+    "giant sun, giant moon"
+)
+
 
 def normalize_niche_key(value: str | None) -> str:
     raw = str(value or "").strip().lower()
@@ -182,17 +227,151 @@ def wrap_visual_prompt(
 def build_flux_prompt(
     beat_visual_concept: str,
     scene_idx: int,
+    *,
+    celestial_scenes: set[int] | frozenset[int] | None = None,
 ) -> tuple[str, str]:
     """Build the complete Flux prompt from the active style and 3-act palette."""
     scene = max(1, int(scene_idx))
+    allowed_celestial = (
+        DEFAULT_CELESTIAL_DISC_SCENES
+        if celestial_scenes is None
+        else frozenset(int(value) for value in celestial_scenes)
+    )
     palette_key = "WARM" if scene <= 3 else ("COLD" if scene <= 6 else "CONTRAST")
+    palette_text = RISO_STYLE.palettes[palette_key]
+    if scene not in allowed_celestial:
+        palette_text = _NON_CELESTIAL_PALETTES[palette_key]
     concept = " ".join(str(beat_visual_concept or "").split()).rstrip(".,; ")
+    concept_low = concept.lower()
+    if scene == 1:
+        spatial_guard = (
+            "SPATIAL ISOLATION: exterior establishing environment, no beds, "
+            "mattresses, dressers, nightstands, sofas, or indoor furniture"
+        )
+    elif scene == 2:
+        spatial_guard = (
+            "SPATIAL ISOLATION: strictly architectural interior framing; "
+            "furniture only where naturally supported by this interior"
+        )
+    elif scene == 3:
+        spatial_guard = (
+            "SPATIAL ISOLATION: tactile prop in its realistic indoor context, "
+            "supported by a table, shelf, rack, or other proper surface"
+        )
+    elif scene == 4:
+        spatial_guard = (
+            "SPATIAL ISOLATION: intimate interior close-up beside a practical "
+            "desk lamp; subject properly seated or standing"
+        )
+    elif scene == 5:
+        spatial_guard = (
+            "SPATIAL ISOLATION: interior corridor transit, no outdoor furniture "
+            "and no person on the floor"
+        )
+    elif scene == 6:
+        spatial_guard = (
+            "SPATIAL ISOLATION: subject indoors behind rain-streaked or reflective "
+            "glass, wet street visible outside"
+        )
+    elif scene == 7:
+        spatial_guard = (
+            "SPATIAL ISOLATION: exterior walking route, no beds, mattresses, "
+            "dressers, nightstands, sofas, chairs, or indoor furniture"
+        )
+    elif scene == 8:
+        spatial_guard = (
+            "SPATIAL ISOLATION: expansive exterior panorama, no beds, mattresses, "
+            "dressers, nightstands, sofas, or indoor furniture"
+        )
+    elif any(term in concept_low for term in ("bedroom", "nursery")):
+        spatial_guard = (
+            "SPATIAL ISOLATION: strictly indoors, cozy interior, wooden "
+            "floorboards, no outdoor placement"
+        )
+    elif any(
+        term in concept_low
+        for term in ("street", "alley", "platform", "sidewalk", "outdoors")
+    ):
+        spatial_guard = (
+            "SPATIAL ISOLATION: exterior environment, no beds, mattresses, "
+            "dressers, nightstands, sofas, or indoor furniture"
+        )
+    else:
+        spatial_guard = "SPATIAL ISOLATION: realistic object placement"
+    if scene in allowed_celestial:
+        lighting_guard = (
+            "A visible sunset sun or moon disc is permitted in this scene only "
+            "when motivated by the story; it is not required"
+        )
+        negative = RISO_STYLE.style_negative
+    else:
+        treatment = _NON_CELESTIAL_LIGHTING.get(
+            scene, "intimate tactile interior chiaroscuro"
+        )
+        enclosure = (
+            "uniform overcast mist fills the sky with no focal shape"
+            if scene in {1, 7}
+            else "the composition is enclosed or tightly cropped so sky and horizon stay outside frame"
+        )
+        lighting_guard = (
+            f"PRACTICAL LIGHTING ONLY: illumination comes exclusively from "
+            f"{treatment}; {enclosure}"
+        )
+        negative = f"{RISO_STYLE.style_negative}, {_CELESTIAL_NEGATIVE}"
     positive = (
         f"{RISO_STYLE.open} {RISO_STYLE.technique} "
-        f"{RISO_STYLE.palettes[palette_key]} {concept}. "
-        f"{RISO_STYLE.mood} {RISO_STYLE.linework_guard}, {RISO_STYLE.format}"
+        f"{palette_text} {concept}. {spatial_guard}. "
+        f"{lighting_guard}. {_UPRIGHT_ANATOMY_GUARD}. "
+        f"{RISO_STYLE.mood} {RISO_STYLE.linework_guard}, "
+        f"{RISO_STYLE.format}"
     )
-    return " ".join(positive.split()), RISO_STYLE.style_negative
+    return " ".join(positive.split()), negative
+
+
+def select_celestial_disc_scenes(script: dict[str, Any]) -> frozenset[int]:
+    """Reserve one intentional disc at resolution, leaving leak headroom."""
+    requested = script.get("celestial_disc_scenes")
+    if isinstance(requested, (list, tuple, set, frozenset)):
+        scenes = frozenset(int(value) for value in requested if int(value) in {1, 8})
+        if 1 <= len(scenes) <= 2:
+            return scenes
+    return frozenset({8})
+
+
+def _non_celestial_anchor(anchor: str) -> str:
+    """Remove time-of-day cues that cause FLUX to invent a sky disc."""
+    cleaned = str(anchor or "")
+    replacements = (
+        (r"\bgolden[\s-]+hour\b", "amber lamplight"),
+        (r"\bsunrise\b|\bdawn\b", "misty overcast morning"),
+        (r"\bsunset\b", "rainy blue hour"),
+        (r"\bsunlit\b|\bsunny\b", "softly lamp-lit"),
+        (r"\bmoonlit\b", "lantern-lit"),
+    )
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    return " ".join(cleaned.split())
+
+
+def _scene_location_anchor(
+    anchor: str,
+    scene: int,
+    celestial_scenes: frozenset[int],
+) -> str:
+    """Keep non-disc scenes free of outdoor cues that provoke sky orbs."""
+    if scene in celestial_scenes:
+        return anchor
+    base = _non_celestial_anchor(anchor)
+    grounded = {
+        1: base,
+        2: "windowless architectural interior in the same story world",
+        3: "tight tabletop detail inside a windowless room",
+        4: "windowless intimate room with one practical desk lamp",
+        5: "enclosed shadowed corridor with closed doors and no windows",
+        6: "night interior behind rain-streaked glass with distant streetlights",
+        7: "misty night walking route lit only by vintage streetlamps",
+    }
+    return grounded.get(scene, base)
 
 
 def anchor_visual_concept(
@@ -236,15 +415,61 @@ def inject_prompt_fields(
     )
     anchor = str(script.get("location_anchor") or fallback_anchor).strip()
     script["location_anchor"] = anchor
+    celestial_scenes = select_celestial_disc_scenes(script)
+    script["celestial_disc_scenes"] = sorted(celestial_scenes)
+    script["celestial_disc_budget"] = len(celestial_scenes)
     rows = [row for row in (script.get("lines") or []) if isinstance(row, dict)]
     for i, row in enumerate(rows, start=1):
-        anchored = anchor_visual_concept(
+        scene = int(row.get("scene") or i)
+        writer_concept = anchor_visual_concept(
             anchor,
             str(row.get("visual_concept") or ""),
-            scene=int(row.get("scene") or i),
+            scene=scene,
         )
+        camera_contract = CAMERA_STAGING_BY_SCENE.get(
+            scene,
+            CAMERA_STAGING_BY_SCENE[((scene - 1) % 8) + 1],
+        )
+        subject_contract = (
+            "parent and child in a coherent shared story world"
+            if preset.key == "parenting"
+            else "the recurring adult subject in a coherent story world"
+        )
+        if scene == 3:
+            subject_contract = "one story-relevant prop in its realistic context"
+        scene_anchor = _scene_location_anchor(anchor, scene, celestial_scenes)
+        anchored = (
+            f"{scene_anchor}. REQUIRED CAMERA AND POSE—OVERRIDES WRITER FRAMING: "
+            f"{camera_contract}. SUBJECT: {subject_contract}. Emotional action "
+            "must match the spoken narration"
+        )
+        row["writer_visual_concept"] = writer_concept
         row["visual_concept"] = anchored
-        positive, negative = build_flux_prompt(anchored, int(row.get("scene") or i))
+        row["camera_staging"] = camera_contract
+        row["celestial_disc_allowed"] = scene in celestial_scenes
+        if row["celestial_disc_allowed"]:
+            row["lighting_prompt_guard"] = (
+                "CELESTIAL BUDGET: this is one of the reel's designated giant "
+                "sun or moon disc scenes; use at most one clear celestial disc"
+            )
+        else:
+            row["lighting_allocation"] = _NON_CELESTIAL_LIGHTING.get(
+                scene, "intimate tactile interior chiaroscuro"
+            )
+            retry_enclosure = (
+                "render a uniform overcast mist field behind the subject"
+                if scene in {1, 7}
+                else "keep sky and horizon completely outside the crop"
+            )
+            row["lighting_prompt_guard"] = (
+                "PRACTICAL-LIGHT-ONLY RETRY: all illumination comes from "
+                f"{row['lighting_allocation']}; {retry_enclosure}"
+            )
+        positive, negative = build_flux_prompt(
+            anchored,
+            scene,
+            celestial_scenes=celestial_scenes,
+        )
         row["final_positive_prompt"] = positive
         row["negative_prompt"] = negative
     script["lines"] = rows
@@ -260,15 +485,22 @@ def writer_visual_clause(preset: NichePreset) -> str:
         else "Keep recurring people visually coherent without forcing one protagonist."
     )
     return (
-        "VISUAL STAGING — Choose a fresh, story-specific environment; do not default "
-        "to a doorway, giant sun, isolated cup, hallway, or sunset alley. Strong "
-        "options include a midnight diner, rainy subway platform, artist studio at "
-        "3 AM, misty coastal overlook, old library aisle, laundromat, ferry deck, "
-        "or high-rise balcony, but invent others when the story asks for them. "
+        "VISUAL STAGING — Use these eight distinct perspectives in order: wide "
+        "establishing exterior; architectural interior framing; tactile prop "
+        "detail; dramatic close-up side profile; motion transit; rain or "
+        "reflective glass; dynamic walking silhouette; expansive panoramic "
+        "closure. Choose a fresh, story-specific bedroom, porch, train "
+        "platform, library, or rainy street. Domestic bathrooms, public restrooms, "
+        "washrooms, toilets, urinals, and commodes are strictly forbidden. Do not "
+        "default to a doorway, giant sun, isolated cup, hallway, or sunset alley. "
+        "A bedroom or nursery is always a cozy indoor interior with wooden "
+        "floorboards. Exterior scenes contain no beds, mattresses, dressers, "
+        "nightstands, sofas, or other indoor furniture. "
+        "Every human remains upright: standing, walking, properly seated on "
+        "furniture, or tucked into bed with visible pillows. Never stage anyone "
+        "lying on a floor, rug, street, or doorstep, crawling, or prone. "
         "The location_anchor names the coherent story world, not a mandatory prop. "
-        "Across eight beats, vary wide establishing shots, moody medium profiles, "
-        "over-the-shoulder views, evocative silhouettes, tactile environmental "
-        "details, and a wide atmospheric resolution. Every prop must belong in its "
+        "Every prop must belong in its "
         "real context: cups on tables or counters, bags on racks or seats, books on "
         "desks or shelves. Never scatter symbolic objects on floors or thresholds. "
         f"{participants} Render as {preset.visual_notes} No front-facing portrait, "

@@ -20,7 +20,7 @@ LOCK_FIXED_BEAT_DURATION: bool = False
 NEVER_TRIM_VOICEOVER: bool = True
 VO_SLOT_PAD_S: float = 0.12
 VO_SLOT_BREATH_S: float = 0.35  # retired as the gap mechanism; kept for logs
-VO_INTERLINE_SILENCE_S: float = 0.30  # manufactured hush between full TTS files
+VO_INTERLINE_SILENCE_S: float = 0.60  # mandatory music-only breath between beats
 MIN_SCENE_SLOT_S: float = 2.5
 MAX_SCENE_SLOT_S: float = 4.0
 # Keep encoder pad on each TTS file so the timeline segment equals file
@@ -60,11 +60,11 @@ MAX_CAPTION_CHARS: int = 84  # room for natural micro-philosophical prose
 MAX_CAPTION_WORDS: int = 12
 # Hard per-beat spoken cap. Direct 9-line compose must satisfy this itself.
 THEMATIC_MAX_CAPTION_CHARS: int = 84
-THEMATIC_MAX_CAPTION_WORDS: int = 12
+THEMATIC_MAX_CAPTION_WORDS: int = 7
 # Writer target for beat 1 only — not a still-duration override. The still
 # holds whatever the rendered hook VO actually lasts.
-HOOK_LINE_TARGET_WORDS: int = 7
-BEAT_TARGET_MAX_WORDS: int = 12
+HOOK_LINE_TARGET_WORDS: int = 4
+BEAT_TARGET_MAX_WORDS: int = 6
 HOOK_LINE_TARGET_S: float = 3.0
 THEMATIC_ARC_ID: str = "thematic_arc"
 # Measured 2026-08-23 from shipped caption_timing at LOFI_VOICE_SPEED=0.80:
@@ -75,8 +75,8 @@ MONOLOGUE_DURATION_SAFETY: float = 0.90
 # Writer-side spoken pace. Distance-pilot VO at speed 0.80 ran ~2.7–3.1 w/s
 # (162–186 wpm) on long literary beats. 150 wpm is slightly conservative so
 # TTS has headroom inside the declared beat window.
-NARRATION_WPM: float = 150.0
-BEAT_WORD_BUDGET_SLACK: int = 5  # 3s target band: 7–12 words
+NARRATION_WPM: float = 120.0
+BEAT_WORD_BUDGET_SLACK: int = 1  # 3s target 6, hard ceiling 7 words
 TTS_DURATION_TOLERANCE: float = 0.15  # post-TTS vs declared duration_s
 LINE_REWRITE_MAX_PASSES: int = 2
 # Per-beat validator repair budget. These attempts do not consume
@@ -975,7 +975,7 @@ REQUIRE_BGM: bool = True
 ENABLE_VOICEOVER: bool = True
 TTS_VOICE_ID: str = "hNtG3AcS155nfu8sfWXk"
 TTS_MODEL: str = "eleven_multilingual_v2"  # v3 ignores voice_settings.speed; v2 applies it
-TTS_SPEED: float = 0.80
+TTS_SPEED: float = 0.69
 LOFI_VOICE_ID = TTS_VOICE_ID
 LOFI_TTS_MODEL = TTS_MODEL
 LOFI_VOICE_SPEED = TTS_SPEED
@@ -1011,15 +1011,18 @@ CAPTION_STYLES: frozenset[str] = frozenset(
 CHANNEL_ASSEMBLY: dict[str, dict[str, Any]] = {
     "momma_circle": {
         "logo_candidates": [
+            "channels_config/momma_circle/logo/logo.png",
             "assets/logos/momma_circle.png",
             "assets/logos/momma_circle_watermark.png",
-            "channels_config/momma_circle/logo/logo.png",
         ],
         "watermark_handle": "@Momma Circle",
         "logo_position": "bottom_center",
         "logo_opacity": 0.90,
         "logo_scale": 0.18,
-        "logo_bottom_px": 72,
+        # The canonical source is ~4x larger than the former derived asset.
+        "logo_size_multiplier": 0.337,
+        "logo_bottom_px": 252,  # raised another 40px
+        "trim_logo_transparent_padding": True,
         "caption_color": (255, 255, 255),
         "use_text_watermark": False,
     },

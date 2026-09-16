@@ -9,6 +9,58 @@ from typing import Any
 from core.economic_reel_lofi import config as lofi_cfg
 
 
+def _slow_audio_to_effective_speed(
+    audio_path: Path,
+    *,
+    api_speed: float,
+    effective_speed: float,
+) -> None:
+    """Apply the small slowdown needed below ElevenLabs' 0.70 API floor."""
+    path = Path(audio_path)
+    if not path.is_file() or path.stat().st_size < 512:
+        return  # tiny unit-test fixture, not production audio
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        try:
+            from imageio_ffmpeg import get_ffmpeg_exe
+
+            ffmpeg = get_ffmpeg_exe()
+        except Exception as exc:
+            raise RuntimeError(
+                "ffmpeg is required for effective TTS speed below 0.70"
+            ) from exc
+    tempo = float(effective_speed) / float(api_speed)
+    temp_path = path.with_name(f"{path.stem}.effective_speed.tmp{path.suffix}")
+    result = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(path),
+            "-filter:a",
+            f"atempo={tempo:.8f}",
+            "-codec:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            str(temp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not temp_path.is_file():
+        temp_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"failed to apply effective TTS speed {effective_speed:.2f}: "
+            f"{result.stderr[-300:]}"
+        )
+    temp_path.replace(path)
+
+
 def _fingerprint(text: str, *, speed: float) -> str:
     payload = "|".join(
         (
@@ -52,7 +104,8 @@ def ensure_script_voiceover(
 
     for i, row in enumerate(lines):
         caption = str(row.get("text") or "")
-        scene_speed = max(0.95, normal_speed) if i == 0 else normal_speed
+        scene_speed = normal_speed
+        api_speed = max(0.70, scene_speed)
         fp = _fingerprint(caption, speed=scene_speed)
         out = target / f"vo_scene_{i + 1:02d}.mp3"
         prior = Path(str(old_paths[i])) if i < len(old_paths) and old_paths[i] else None
@@ -74,17 +127,30 @@ def ensure_script_voiceover(
                 force_elevenlabs=True,
                 expressive_mode=False,
                 enable_ssml=False,
-                speed=scene_speed,
+                speed=api_speed,
                 voice_settings={
                     "stability": 1.0,
                     "similarity_boost": 1.0,
                     "style": 0.0,
                     "use_speaker_boost": True,
-                    "speed": scene_speed,
+                    "speed": api_speed,
                 },
             )
+            if scene_speed < api_speed:
+                _slow_audio_to_effective_speed(
+                    Path(generated),
+                    api_speed=api_speed,
+                    effective_speed=scene_speed,
+                )
+                timing_scale = api_speed / scene_speed
+            else:
+                timing_scale = 1.0
             clean = [
-                (str(w), float(s), float(e))
+                (
+                    str(w),
+                    float(s) * timing_scale,
+                    float(e) * timing_scale,
+                )
                 for w, s, e in (raw or [])
                 if str(w).strip()
                 and not str(w).startswith("<")
@@ -100,17 +166,18 @@ def ensure_script_voiceover(
             out, timing = generate(caption)
 
         vo_dur = float(measure_vo_speech_duration(out)) if out and out.is_file() else 0.0
-        if i == 0:
+        if len(lines) == 1:
             slot = round(min(vo_dur + 0.2, 3.0), 3)
         elif i == len(lines) - 1:
             slot = round(vo_dur + 2.25, 3)
         else:
-            slot = round(vo_dur + 0.4, 3)
+            slot = round(vo_dur + float(lofi_cfg.VO_INTERLINE_SILENCE_S), 3)
         # Preserve the Gate-1 nominal duration for validator compatibility.
         # The actual assembly anchor lives separately and in scene_durations.
         row["audio_slot_s"] = slot
         row["vo_duration_s"] = round(vo_dur, 3)
         row["tts_speed"] = round(scene_speed, 3)
+        row["tts_api_speed"] = round(api_speed, 3)
         paths.append(out if out and out.is_file() else None)
         timings_all.append(timing)
         durations.append(slot)

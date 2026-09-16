@@ -77,6 +77,33 @@ MODEL_CTA_CAPTIONS: list[str] = [
     "link in bio for more fun 😋",
 ]
 
+# Loose-folder model hashtag captions (--modelHashtag). Brand-safe Reels
+# growth pool: exactly 2 hashtags + 1–2 clean emojis. No adult terms.
+# Written into <folder>/asset_library.json only when that file is missing.
+MODEL_HASHTAG_DEFAULT: str = "#ViralReels #ModelStyle ✨"
+MODEL_HASHTAG_CAPTIONS: list[str] = [
+    "#ViralReels #ModelStyle ✨",
+    "#Trending #OOTD 📸",
+    "#FBReels #FashionVibes 💎",
+    "#ReelsChallenge #ModelLook 🌟",
+    "#ExplorePage #Aesthetic 🔥",
+    "#ForYou #StyleInspo ✨👗",
+    "#ModelLife #StudioDay 📸",
+    "#FashionReel #GlowUp 💫",
+    "#TrendAlert #LookOfTheDay 💎",
+    "#ViralFashion #ReelsDaily 🔥",
+    "#EditorialLook #PhotoDay 📷",
+    "#StyleGoals #FBReels 💫",
+    "#StreetStyle #Trending ⚡",
+    "#WeekendLook #OOTD 🌸",
+    "#GoldenHour #ModelLook 🌅",
+    "#BehindTheScenes #OnSet 🎥",
+    "#CastingReady #ModelMood ✨",
+    "#NewDrop #FashionVibes ✨",
+    "#BeautyInMotion #ReelsChallenge 💫",
+    "#RunwayVibes #ModelStyle 🌟",
+]
+
 # ---------------------------------------------------------------------------
 # Playwright / browser connection
 # ---------------------------------------------------------------------------

@@ -325,17 +325,46 @@ class LocalMediaQueue:
         )
 
     def ensure_model_cta_library(self) -> Path | None:
-        """
-        Write a LADA-style ``asset_library.json`` when the folder has none.
+        """Write a LADA-style CTA ``asset_library.json`` when the folder has none."""
+        captions = list(getattr(config, "MODEL_CTA_CAPTIONS", []) or [])
+        default = str(getattr(config, "MODEL_CTA_DEFAULT", "") or "").strip()
+        return self._write_model_caption_library(
+            captions,
+            default=default,
+            flag_label="--modelCTA",
+            empty_warning="MODEL_CTA_CAPTIONS empty — skipped library write.",
+        )
 
-        Rotates ``config.MODEL_CTA_CAPTIONS`` across every pending ``.mp4``.
+    def ensure_model_hashtag_library(self) -> Path | None:
+        """Write a brand-safe hashtag ``asset_library.json`` when the folder has none."""
+        captions = list(getattr(config, "MODEL_HASHTAG_CAPTIONS", []) or [])
+        default = str(getattr(config, "MODEL_HASHTAG_DEFAULT", "") or "").strip()
+        return self._write_model_caption_library(
+            captions,
+            default=default,
+            flag_label="--modelHashtag",
+            empty_warning="MODEL_HASHTAG_CAPTIONS empty — skipped library write.",
+        )
+
+    def _write_model_caption_library(
+        self,
+        captions: list[str],
+        *,
+        default: str,
+        flag_label: str,
+        empty_warning: str,
+    ) -> Path | None:
+        """
+        Rotate *captions* across every pending ``.mp4`` into ``asset_library.json``.
+
         Existing libraries are never overwritten. Returns the path written,
         or ``None`` when the file already existed / no videos were found.
         """
         dest = Path(self.asset_library_path)
         if dest.is_file():
             _log.info(
-                "asset_library.json already present — --modelCTA left it untouched: %s",
+                "asset_library.json already present — %s left it untouched: %s",
+                flag_label,
                 dest,
             )
             return None
@@ -345,22 +374,24 @@ class LocalMediaQueue:
             for p in self.media_dir.iterdir()
             if p.is_file() and p.suffix.lower() in self.extensions
         )
-        captions = list(getattr(config, "MODEL_CTA_CAPTIONS", []) or [])
-        default = str(
-            getattr(config, "MODEL_CTA_DEFAULT", "") or (captions[0] if captions else "")
-        ).strip()
-        if not captions and default:
-            captions = [default]
-        if not captions:
-            _log.warning("MODEL_CTA_CAPTIONS empty — skipped library write.")
+        pool = [str(c).strip() for c in captions if str(c).strip()]
+        default_text = (default or (pool[0] if pool else "")).strip()
+        if not pool and default_text:
+            pool = [default_text]
+        if not pool:
+            _log.warning(empty_warning)
             return None
         if not videos:
-            _log.warning("No videos in %s — skipped model CTA library.", self.media_dir)
+            _log.warning(
+                "No videos in %s — skipped %s library.",
+                self.media_dir,
+                flag_label,
+            )
             return None
 
         assets: list[dict[str, str]] = []
         for i, video in enumerate(videos):
-            caption = captions[i % len(captions)]
+            caption = pool[i % len(pool)]
             assets.append(
                 {
                     "video_path": video.name,
@@ -376,8 +407,9 @@ class LocalMediaQueue:
             "schema_version": "1.0",
             "folder": str(self.media_dir),
             "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "default_caption": default or captions[0],
-            "captions": captions,
+            "caption_kind": "hashtag" if flag_label == "--modelHashtag" else "cta",
+            "default_caption": default_text or pool[0],
+            "captions": pool,
             "assets": assets,
         }
         dest.write_text(
@@ -386,9 +418,10 @@ class LocalMediaQueue:
         )
         self._metadata_by_filename = None
         _log.info(
-            "Wrote model CTA library (%d video(s), %d caption variant(s)) -> %s",
+            "Wrote %s library (%d video(s), %d caption variant(s)) -> %s",
+            flag_label,
             len(assets),
-            len(captions),
+            len(pool),
             dest,
         )
         return dest

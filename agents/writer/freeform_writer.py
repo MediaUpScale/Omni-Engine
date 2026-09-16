@@ -27,6 +27,78 @@ from agents.writer.writer_brief import WriterBrief
 MIN_LINES = 8
 MAX_LINES = 8
 
+_FORBIDDEN_SIMPLE_WORDS = frozenset(
+    {"void", "torment", "toll", "sway", "flinching", "unmet"}
+)
+_FORBIDDEN_BATHROOM_TERMS = (
+    "bathroom",
+    "restroom",
+    "washroom",
+    "toilet",
+    "urinal",
+    "commode",
+)
+_AMBIGUOUS_SUBJECT_PRONOUNS = frozenset(
+    {
+        "they", "them", "their", "theirs", "they're", "they'll", "they've",
+        "he", "him", "his", "he's", "he'll",
+        "she", "her", "hers", "she's", "she'll",
+    }
+)
+_SUBJECT_GROUNDING_NOUNS = frozenset(
+    {
+        "child", "children", "kid", "kids", "baby", "babies", "toddler",
+        "toddlers", "teen", "teens", "parent", "parents", "mother", "mothers",
+        "mom", "moms", "father", "fathers", "dad", "dads", "son", "sons",
+        "daughter", "daughters", "partner", "partners", "husband", "husbands",
+        "wife", "wives", "boyfriend", "girlfriend", "lover", "lovers",
+        "friend", "friends", "person", "people", "man", "men", "woman", "women",
+        "liar", "liars", "grandfather", "grandmother", "family", "families",
+    }
+)
+_ROMANTIC_SUBJECT_NOUNS = frozenset(
+    {
+        "partner", "partners", "husband", "husbands", "wife", "wives",
+        "boyfriend", "girlfriend", "lover", "lovers", "ex",
+    }
+)
+_PARENTING_SUBJECT_NOUNS = frozenset(
+    {
+        "child", "children", "kid", "kids", "baby", "babies", "toddler",
+        "toddlers", "teen", "teens", "parent", "parents", "mother", "mothers",
+        "mom", "moms", "father", "fathers", "dad", "dads", "son", "sons",
+        "daughter", "daughters",
+    }
+)
+_ANECDOTE_AUTHORITY_NOUNS = frozenset(
+    {"grandfather", "grandmother", "grandpa", "grandma"}
+)
+_PARENTING_FRICTION_VOCAB: dict[str, frozenset[str]] = {
+    "perfectionism_guilt": frozenset(
+        {
+            "guilt", "guilty", "perfect", "perfection", "clean", "cleaning",
+            "chore", "chores", "dish", "dishes", "scrub", "tidy", "mess",
+        }
+    ),
+    "screen_distraction": frozenset(
+        {"phone", "phones", "screen", "screens", "scroll", "scrolling", "device"}
+    ),
+    "bedtime_control": frozenset(
+        {"sleep", "bedtime", "routine", "routines", "clock", "bed"}
+    ),
+    "anger_impatience": frozenset(
+        {"anger", "angry", "patience", "impatient", "temper", "yell", "yelling"}
+    ),
+}
+_EXTERIOR_TERMS = (
+    "street", "streets", "alley", "alleys", "platform", "platforms",
+    "sidewalk", "sidewalks", "road", "roads", "outdoor", "outdoors",
+)
+_INDOOR_FURNITURE_TERMS = (
+    "bed", "beds", "mattress", "mattresses", "dresser", "dressers",
+    "nightstand", "nightstands", "sofa", "sofas", "couch", "couches",
+)
+
 
 _CLAUSE_END = (",", ";", ":", "—", "–", ".", "?", "!")
 _CLAUSE_LEAD = frozenset(
@@ -250,27 +322,135 @@ descriptions. Spoken words only. Produce exactly 7 to 9 beats. Each beat contain
 7 to 12 words and should take roughly 2.5 to 3.5 seconds when spoken. Output valid \
 SCRIPT_CANDIDATE_JSON and nothing else."""
 
-LOFI_WRITER_SYSTEM_PROMPT = """You are an award-winning auteur and philosophical \
-storyteller for short-form cinema (ECONOMIC_REEL_LOFI). Write a unique, \
-psychologically gripping micro-narrative anchored in human truth. The visual \
-identity is painterly risograph/gouache: textured paper, rich chiaroscuro, fine \
-ink linework, and no photorealism. Return ONLY valid JSON matching the schema.
+LOFI_WRITER_SYSTEM_PROMPT = """You write relatable, emotionally devastating \
+micro-narratives for short-form video. Return ONLY valid JSON matching the schema.
 
-CRITICAL RULES:
-1. Start from a profound philosophical insight or psychological paradox. Build \
-one cohesive eight-beat arc with rising tension and a poignant resolution. No \
-generic social-media quotes or repeated paraphrases of the same moral.
-2. Declare a fresh story-specific location_anchor first. Do not default to the \
-same doorway, giant sun, hallway, isolated cup, or sunset alley. Stage realistic \
-props where they belong: cups on tables, bags on racks, books on desks.
-3. Mix wide establishing shots, silhouettes with motivated rim light, moody \
-medium profiles, tactile environmental details, and a wide atmospheric ending. \
-Never return sterile B-roll, direct eye contact, a visible speaking mouth, or \
-photorealism.
-4. Return exactly eight narration beats, each with 7–11 naturally spoken words. \
-Total narration stays below 80 words. Keep metadata values at 3 words maximum. \
-Every visual_concept names subject, framing, light, texture, and meaningful \
-action. Emit compact JSON. The pipeline adds style and full prompts."""
+THE 4 RULES OF THE GOLDEN SCRIPT:
+1. STRICT WORD LIMIT: Write exactly eight beats. Every beat contains 4–6 simple \
+spoken words. The total script contains at most 48 words.
+2. EIGHTH-GRADE VOCABULARY ONLY: Never use “void”, “torment”, “toll”, “sway”, \
+“flinching”, or “unmet”. Prefer simple, visceral words such as “hurt”, “call”, \
+“text”, “lie”, “stay”, “leave”, “tired”, and “quiet”.
+3. ANAPHORA AND CADENCE: Intentionally repeat core anchor words across beats to \
+build poetic momentum—for example, “Let them…”, “One lie…”, or “If they \
+wanted…”. The eight beats must still form one clear emotional progression, not \
+a list of disconnected quotes.
+4. SUBJECT GROUNDING AND PHILOSOPHER HOOK: Beat 1 or beat 2 must explicitly \
+name the person—child, parent, partner, mother, father, friend, or another \
+concrete subject—before any “they”, “them”, “their”, “he”, or “she” appears. \
+Never open with an ambiguous pronoun. When philosophy mode is selected, state \
+the philosopher \
+and the plain-language idea immediately in beat 1 or 2, connected directly to \
+an everyday heartbreak. Never invent a quotation.
+
+PROVEN MOMMA CIRCLE GOLDEN BLUEPRINT — REQUIRED FOR BOTH NICHES:
+Beat 1, THE HOOK OR QUOTE: a profound universal premise.
+Beat 2, THE REALITY CHECK: immediately bridge that premise into real life.
+Beat 3, THE RELATABLE BEHAVIOR: one specific, tangible daily action.
+Beat 4, THE PAINFUL CONTRAST: what is actually happening instead.
+Beat 5, THE COST: the time or presence silently being lost.
+Beat 6, THE REFRAME: the emotional or psychological truth.
+Beat 7, THE ACTION: one tangible release the subject can perform.
+Beat 8, THE POIGNANT CLOSURE: grounded, earned peace that completes one clear, \
+useful lesson or psychological concept.
+Never jump directly from an abstract premise to unrelated advice. Beats 1–3 \
+must read as one continuous logical bridge; each later beat must follow because \
+of the beat before it. Do not mechanically begin Beat 2 with “Yet” every time. \
+Rotate naturally among direct reality checks (“Real life rarely reads theory,” \
+“Because memory refuses logic,” “Theory breaks against heartbreak”), reflective \
+questions (“Why does the heart argue?”, “Where does that calm go?”, “Why replay \
+an empty room?”), and varied connectives (“And still…”, “Yet…”, “Except we crave \
+answers…”, “Even when silence is clear…”). Yet is valid, never mandatory. If \
+Beat 1 names only a philosopher, Beat 2 must name the concrete partner, parent, \
+mother, father, or child inside its bridge; never wait until Beat 3 to ground \
+the subject.
+
+POV SUBJECT INTEGRITY — ABSOLUTE:
+Choose one unified human relationship and keep it unchanged from Beat 1 through \
+Beat 8. In relationship scripts, remain with the same romantic partner dynamic. \
+In parenting scripts, remain with the same parent-child dynamic. A famous thinker \
+in Beat 1 is the hook, not a new story subject. Never switch from father, mother, \
+grandfather, grandmother, friend, or child to a romantic partner, or from a \
+romantic partner to a parenting relationship. Never use a random family anecdote \
+or “my grandfather/father/mother told me” opening. Anchors are exclusively famous \
+thinker hooks or relatable psychological realities.
+
+SINGLE-CONFLICT UNITY — ABSOLUTE:
+Choose one emotional friction and make all eight beats deepen that same conflict. \
+Never introduce a second flaw, wound, habit, or lesson. Parenting scripts must \
+choose exactly one tension: perfectionism/guilt, screen distraction/lost time, \
+bedtime control, or anger/impatience. Never mix these families—for example, do \
+not combine guilt, chores, anger, and lack of patience in one reel. Every daily \
+behavior, painful contrast, cost, reframe, action, and closure must causally \
+belong to the one selected tension. The final lesson must be specific to that \
+tension and useful to the viewer, never a detached quote or generic slogan.
+
+COGNITIVE BRIDGE REFERENCE — COPY THE LOGIC, NOT THE WORDING:
+Seneca said suffering starts in thought.
+Yet memory feels painfully real.
+Your partner already chose to leave.
+Still your mind replays every word.
+While today slips through your hands.
+Their silence is the answer.
+Stop arguing with empty rooms.
+Peace returns when you look forward.
+
+GOLDEN REFERENCE 1 — CONTROVERSY / TRUTH:
+Never ask a liar the truth.
+They only invent another lie.
+One lie never lives alone.
+It needs another to survive.
+Until they forget what happened.
+And believe their own fiction.
+So stop asking for explanations.
+The silence was their answer.
+
+GOLDEN REFERENCE 2 — RELATIONSHIP HURT:
+If your partner cared, you'd know.
+Love never leaves you guessing.
+It shows up in calls.
+It shows up in effort.
+You shouldn't beg for presence.
+Seneca said we fear ghosts.
+So let them walk away.
+Peace begins in your hands.
+
+GOLDEN REFERENCE 3 — PARENTING NOSTALGIA:
+Childhood only happens one time.
+While we stare at screens.
+Children reach with small hands.
+Before you know, they're gone.
+These messy rooms become quiet.
+Put the phone face down.
+Look them in the eyes.
+Be here while it lasts.
+
+VISUAL STAGING: Declare a fresh story-specific location_anchor first. Give all \
+eight beats a different camera perspective in this exact order: (1) wide \
+establishing landscape or exterior, (2) architectural interior framing, (3) \
+tactile environmental prop detail, (4) close-up side profile in dramatic light, \
+(5) motion through a door, platform, or corridor, (6) view through rain or \
+reflective glass, (7) dynamic walking silhouette, (8) expansive panoramic \
+closure. Domestic \
+bathrooms, public restrooms, toilets, urinals, washrooms, and commodes are \
+strictly forbidden. Stage intimate scenes only in bedrooms, porches, train \
+platforms, libraries, or rainy streets. Keep props in realistic context. Mix \
+wide establishing shots, moody profiles, tactile details, and an atmospheric \
+resolution in painterly risograph/gouache. No photorealism, direct eye contact, \
+or visible speaking mouth. Bedrooms and nurseries are strictly indoor: describe \
+a cozy bedroom interior with wooden floorboards. Exterior scenes must never \
+contain beds, mattresses, dressers, nightstands, sofas, or other indoor \
+furniture; no beds on streets and no mattresses in alleys. Keep metadata values \
+at 3 words maximum. Human subjects must remain anatomically upright: standing, \
+walking, seated properly on furniture, or tucked into a bed with visible \
+pillows. Never show anyone lying on a floor, rug, street, or doorstep; never \
+show crawling or prone bodies. Every \
+visual_concept names subject, framing, light, texture, and meaningful action. \
+Across the reel, propose no more than two giant sun or moon disc moments, ideally \
+at the opening or final resolution. The other six or seven concepts prioritize \
+warm tungsten table lamps, vintage streetlights with amber wet reflections, dark \
+rain on glass, misty twilight gradients, or deep interior chiaroscuro. The \
+pipeline makes the final per-scene celestial allocation and adds full prompts."""
 
 
 def _niche_key(brief: WriterBrief | None = None) -> str:
@@ -303,23 +483,22 @@ def _output_contract(brief: WriterBrief | None = None) -> str:
     meta = (brief.meta if brief is not None else {}) or {}
     beat_s = float(meta.get("beat_duration_s") or meta.get("scene_duration_s") or lofi_cfg.beat_duration_s())
     ceiling = lofi_cfg.beat_word_ceiling(beat_s)
-    target_max = min(ceiling, int(getattr(lofi_cfg, "BEAT_TARGET_MAX_WORDS", ceiling)))
     return f"""Return one JSON object, no markdown fence, no commentary:
 
 {{
   "location_anchor": "<one concise physical or poetic visual-world anchor>",
   "human_situation": "<maximum 3 words>",
-  "structure": "<maximum 3 words>",
+  "structure": "cognitive bridge",
   "closing_tool": "<maximum 3 words>",
   "beats": [
     {{
       "scene": 1,
-      "text": "<7-11 punchy spoken words>",
+      "text": "<4-6 simple spoken words>",
       "visual_concept": "<concise subject, framing, light, texture, and action>"
     }},
     {{
       "scene": 2,
-      "text": "<7-11 spoken words>",
+      "text": "<4-6 simple spoken words>",
       "visual_concept": "<concise subject, framing, light, texture, and action>"
     }}
   ]
@@ -330,10 +509,9 @@ numbered consecutively 1–8. Every beat MUST include text and visual_concept. \
 Do not return writer_mode, theme, subtheme, niche, or any keys outside this schema; \
 the pipeline already owns them. location_anchor must be the first key.
 
-Every scene, including scene 1, contains 7–11 spoken words and never exceeds \
-{min(11, target_max)} words (absolute ceiling \
-{ceiling}). Total narration MUST stay below 80 words. Write one lucid breath \
-per beat."""
+Every scene contains exactly 4–6 spoken words (hard ceiling \
+{min(6, ceiling)}). Total narration MUST contain at \
+most 48 words. Write one lucid breath per beat."""
 
 
 def build_prompt(brief: WriterBrief, *, reference_seed: int | None = None) -> str:
@@ -408,9 +586,14 @@ def _coerce_visuals(raw: Any, *, expected: int) -> list[str]:
     return out[:expected]
 
 
-def _normalize_total_word_budget(lines: list[str], *, maximum: int = 79) -> list[str]:
+def _normalize_total_word_budget(lines: list[str], *, maximum: int = 48) -> list[str]:
     """Deterministically fit the aggregate budget without another model call."""
     out = [" ".join(str(line or "").split()) for line in lines]
+    for i, line in enumerate(out):
+        words = line.split()
+        while len(words) > 6:
+            del words[-2]
+        out[i] = " ".join(words)
     fillers = {
         "very",
         "really",
@@ -433,7 +616,7 @@ def _normalize_total_word_budget(lines: list[str], *, maximum: int = 79) -> list
         changed = False
         for i in candidates:
             words = out[i].split()
-            if len(words) <= 7:
+            if len(words) <= 4:
                 continue
             removable = next(
                 (
@@ -448,8 +631,123 @@ def _normalize_total_word_budget(lines: list[str], *, maximum: int = 79) -> list
             changed = True
             break
         if not changed:
-            raise ValueError("writer narration cannot fit below 80 words")
+            raise ValueError("writer narration cannot fit within 48 words")
     return out
+
+
+def _validate_golden_contract(
+    lines: list[str],
+    *,
+    location_anchor: str,
+    visuals: list[str],
+    niche: str | None = None,
+) -> None:
+    word_counts = [len(line.split()) for line in lines]
+    if any(count < 4 or count > 6 for count in word_counts):
+        raise ValueError(f"writer beat word counts outside contract: {word_counts}")
+    if sum(word_counts) > 48:
+        raise ValueError("writer narration must contain at most 48 words")
+    tokens = [
+        token.lower()
+        for line in lines
+        for token in re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", line)
+    ]
+    early_tokens = [
+        token.lower()
+        for line in lines[:2]
+        for token in re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", line)
+    ]
+    first_pronoun = next(
+        (
+            i
+            for i, token in enumerate(tokens)
+            if token in _AMBIGUOUS_SUBJECT_PRONOUNS
+        ),
+        None,
+    )
+    early_grounding = [
+        i
+        for i, token in enumerate(early_tokens)
+        if token in _SUBJECT_GROUNDING_NOUNS
+    ]
+    if first_pronoun is not None and (
+        not early_grounding or min(early_grounding) > first_pronoun
+    ):
+        raise ValueError(
+            "writer used an ambiguous pronoun before naming the subject in beat 1 or 2"
+        )
+    narration_words = {
+        word.lower()
+        for line in lines
+        for word in re.findall(r"[A-Za-z']+", line)
+    }
+    blocked_words = sorted(narration_words & _FORBIDDEN_SIMPLE_WORDS)
+    if blocked_words:
+        raise ValueError(
+            f"writer used forbidden vocabulary: {', '.join(blocked_words)}"
+        )
+    narration_tokens = set(tokens)
+    anecdote_authorities = sorted(
+        narration_tokens & _ANECDOTE_AUTHORITY_NOUNS
+    )
+    opening = " ".join(lines[:2]).lower()
+    loose_family_opening = bool(
+        re.search(r"\bmy\s+(?:father|mother|dad|mom)\b", opening)
+    )
+    if anecdote_authorities or loose_family_opening:
+        raise ValueError("writer used a forbidden loose family anecdote")
+    romantic_roles = narration_tokens & _ROMANTIC_SUBJECT_NOUNS
+    parenting_roles = narration_tokens & _PARENTING_SUBJECT_NOUNS
+    niche_key = str(niche or "").strip().lower()
+    if romantic_roles and parenting_roles:
+        raise ValueError("writer switched between romantic and parenting subjects")
+    if niche_key == "relationship" and parenting_roles:
+        raise ValueError("relationship script switched to a parenting subject")
+    if niche_key == "parenting" and romantic_roles:
+        raise ValueError("parenting script switched to a romantic subject")
+    if niche_key == "parenting":
+        active_frictions = [
+            name
+            for name, vocabulary in _PARENTING_FRICTION_VOCAB.items()
+            if narration_tokens & vocabulary
+        ]
+        if len(active_frictions) > 1:
+            raise ValueError(
+                "parenting script mixed multiple emotional frictions: "
+                + ", ".join(active_frictions)
+            )
+    visual_text = " ".join([location_anchor, *visuals]).lower()
+    blocked_settings = [
+        term for term in _FORBIDDEN_BATHROOM_TERMS if term in visual_text
+    ]
+    if blocked_settings:
+        raise ValueError(
+            f"writer used forbidden bathroom staging: {', '.join(blocked_settings)}"
+        )
+    anchor_low = location_anchor.lower()
+    indoor_anchor = any(
+        term in anchor_low for term in ("bedroom", "nursery", "library")
+    )
+    exterior_anchor = (
+        any(term in anchor_low for term in _EXTERIOR_TERMS) and not indoor_anchor
+    )
+    if any(term in anchor_low for term in ("bedroom", "nursery")) and any(
+        term in anchor_low for term in ("outdoor", "outdoors", "street bed")
+    ):
+        raise ValueError("writer placed a bedroom or nursery outdoors")
+    exterior_markers = (
+        "on the street", "in the street", "on a street", "in an alley",
+        "on the platform", "outdoors", "outside on",
+    )
+    for concept in visuals:
+        concept_low = concept.lower()
+        has_furniture = any(
+            term in re.findall(r"[a-z]+", concept_low)
+            for term in _INDOOR_FURNITURE_TERMS
+        )
+        explicit_exterior = any(marker in concept_low for marker in exterior_markers)
+        if has_furniture and (exterior_anchor or explicit_exterior):
+            raise ValueError("writer placed indoor furniture in an exterior scene")
 
 
 def write_draft(
@@ -479,6 +777,11 @@ def write_draft(
         f"output_tokens={int(getattr(result, 'output_tokens_est', 0) or 0)}"
     )
     data = _extract_json(result.text)
+    structure = " ".join(str(data.get("structure") or "").split())
+    if structure.lower() != "cognitive bridge":
+        raise ValueError(
+            "writer did not certify the required cognitive bridge structure"
+        )
     raw_beats = data.get("beats") or data.get("lines")
     lines = _coerce_lines(raw_beats)
     if not (MIN_LINES <= len(lines) <= MAX_LINES):
@@ -493,14 +796,17 @@ def write_draft(
         raise ValueError("writer response had no location_anchor")
     if any(not concept for concept in visuals):
         raise ValueError("writer response had an empty visual_concept")
-    word_counts = [len(line.split()) for line in lines]
-    if any(count < 7 or count > 11 for count in word_counts):
-        raise ValueError(f"writer beat word counts outside contract: {word_counts}")
+    _validate_golden_contract(
+        lines,
+        location_anchor=location_anchor,
+        visuals=visuals,
+        niche=_niche_key(brief),
+    )
     draft = ScriptDraft(
         lines=lines,
         location_anchor=location_anchor,
         human_situation=" ".join(str(data.get("human_situation") or "").split()),
-        structure=" ".join(str(data.get("structure") or "").split()),
+        structure=structure,
         closing_tool=" ".join(str(data.get("closing_tool") or "").split()),
         brief=brief,
         attempt=attempt,

@@ -11,11 +11,95 @@ Nothing here decides line count, cadence, or shape. Those belong to the writer.
 """
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 BriefMode = Literal["emotional", "theme", "quote", "paraphrase"]
+
+PHILOSOPHICAL_ANCHORS: tuple[str, ...] = (
+    "Seneca on how we suffer more in imagination than reality",
+    "Marcus Aurelius on letting go of what we cannot control",
+    "Friedrich Nietzsche on the burden of masks and unspoken truths",
+    "Albert Camus on quiet persistence and invincible summers",
+    "Carl Jung on confronting our own shadow before blaming others",
+    "Søren Kierkegaard on understanding life backwards while living it forward",
+    "Arthur Schopenhauer on the pain of loneliness vs peace of solitude",
+)
+PSYCHOLOGICAL_REALITY_ANCHORS: tuple[str, ...] = (
+    "how silence becomes an answer when someone repeatedly avoids connection",
+    "why checking a phone cannot create the care that is missing",
+    "how guilt steals the presence a child needs right now",
+    "why control makes ordinary family moments feel unsafe",
+    "how replaying yesterday quietly takes attention from today",
+)
+COGNITIVE_BRIDGE_STYLES: tuple[tuple[str, str], ...] = (
+    (
+        "direct reality check",
+        "Beat 2 makes a plain observation, such as 'Real life rarely reads "
+        "theory,' 'Because memory refuses logic,' or 'Theory breaks against "
+        "heartbreak.'",
+    ),
+    (
+        "reflective question",
+        "Beat 2 asks a natural question, such as 'Why does the heart argue?', "
+        "'Where does that calm go?', or 'Why replay an empty room?'",
+    ),
+    (
+        "varied connective",
+        "Beat 2 uses a natural connective such as 'And still...', 'Yet...', "
+        "'Except we crave answers...', or 'Even when silence is clear...'.",
+    ),
+)
+
+
+def select_single_conflict(niche: str, theme: str = "", subtheme: str = "") -> str:
+    """Resolve one episode-level emotional friction from the selected theme."""
+    key = f"{theme} {subtheme}".strip().lower().replace("_", " ")
+    if str(niche or "").strip().lower() == "parenting":
+        if any(term in key for term in ("self compassion", "good enough", "guilt", "perfect", "clean", "chore")):
+            return "perfectionism guilt about keeping the home perfect"
+        if any(term in key for term in ("presence", "phone", "screen", "time", "distraction")):
+            return "screen distraction stealing present childhood time"
+        if any(term in key for term in ("sleep", "bedtime", "routine")):
+            return "bedtime control replacing calm connection"
+        if any(term in key for term in ("anger", "patience", "temper", "yell")):
+            return "parental impatience during one recurring moment"
+    return key or (
+        "one romantic disconnection"
+        if str(niche or "").strip().lower() == "relationship"
+        else "one parenting tension"
+    )
+
+
+def get_narrative_harness(
+    niche: str,
+    *,
+    theme: str = "",
+    subtheme: str = "",
+    rng: random.Random | None = None,
+) -> dict[str, Any]:
+    """Choose one episode-level anchor before the writer model is called."""
+    chooser = rng or random
+    use_philosophy = chooser.random() < 0.70
+    anchor = chooser.choice(
+        PHILOSOPHICAL_ANCHORS
+        if use_philosophy
+        else PSYCHOLOGICAL_REALITY_ANCHORS
+    )
+    bridge_style, bridge_direction = chooser.choice(COGNITIVE_BRIDGE_STYLES)
+    return {
+        "narrative_mode": (
+            "famous_thinker_hook" if use_philosophy else "original_freewriting"
+        ),
+        "use_philosophy": use_philosophy,
+        "narrative_anchor": anchor,
+        "narrative_niche": str(niche or "relationship").strip() or "relationship",
+        "cognitive_bridge_style": bridge_style,
+        "cognitive_bridge_direction": bridge_direction,
+        "single_conflict": select_single_conflict(niche, theme, subtheme),
+    }
 
 
 @dataclass(frozen=True)
@@ -223,11 +307,32 @@ class WriterBrief:
             )
         elif self.mode == "emotional":
             niche = str(self.module or "relationship").strip().lower()
+            narrative_mode = str(
+                (self.meta or {}).get("narrative_mode") or "philosophy"
+            )
+            narrative_anchor = str(
+                (self.meta or {}).get("narrative_anchor")
+                or "a specific psychological paradox"
+            )
+            bridge_style = str(
+                (self.meta or {}).get("cognitive_bridge_style")
+                or "a naturally varied bridge"
+            )
+            bridge_direction = str(
+                (self.meta or {}).get("cognitive_bridge_direction")
+                or "Use either a direct reality check, a reflective question, "
+                "or a connective that fits this story."
+            )
+            single_conflict = str(
+                (self.meta or {}).get("single_conflict")
+                or self.subtheme
+                or self.theme
+                or "one emotional friction"
+            )
             parts.append(
-                "AUTEUR MICRO-NARRATIVE:\n"
-                "You are an award-winning auteur and philosophical storyteller for "
-                "short-form cinema (ECONOMIC_REEL_LOFI). Write a unique, "
-                "psychologically gripping micro-narrative anchored in human truth.\n"
+                "EVERYDAY CADENCE & ANAPHORA EPISODE:\n"
+                "Write a relatable, emotionally devastating micro-narrative in "
+                "plain, everyday language.\n"
                 f"  Niche: {niche}\n"
                 f"  Theme: {self.theme.replace('_', ' ')}\n"
                 + (
@@ -235,17 +340,68 @@ class WriterBrief:
                     if self.subtheme
                     else ""
                 )
-                + "THE ANCHOR: Begin from a profound philosophical insight or "
-                "psychological paradox: how lies multiply to survive, why pride "
-                "costs more than grief, the illusion of closure, the unspoken "
-                "weight of time, or an equally specific truth you discover. "
-                "Do not copy those examples. NO GENERIC SOCIAL MEDIA QUOTES: build "
-                "one cohesive eight-beat narrative with rising tension, meaningful "
-                "turns, and a poignant resolution. Avoid therapy slogans, "
-                "motivational certainty, lectures, shame, melodrama, and imitation "
-                "of any named author. VOICE & PACING: every beat has 7–11 spoken "
-                "words in natural cadence. Each beat must advance the thought; no "
-                "Mad-Libs repetition, interchangeable filler, or repeated moral."
+                + f"  Narrative mode: {narrative_mode}\n"
+                + f"  Selected anchor: {narrative_anchor}\n"
+                + f"  Selected Beat 2 bridge style: {bridge_style}\n"
+                + f"  Beat 2 direction: {bridge_direction}\n"
+                + f"  ONE LOCKED CONFLICT: {single_conflict}\n"
+                + "Use the proven Momma Circle blueprint exactly: beat 1 profound "
+                "universal hook or famous-thinker premise; beat 2 immediate reality "
+                "check; beat 3 specific tangible daily behavior; beat 4 painful "
+                "contrast showing what happens instead; beat 5 time or presence "
+                "lost; beat 6 emotional or psychological reframe; beat 7 tangible "
+                "release action; beat 8 poignant, grounded peace. Beats 1–3 must "
+                "be one continuous "
+                "logical bridge, never an abrupt jump from abstract philosophy to "
+                "unrelated advice. Each later beat must follow because of the "
+                "previous beat. "
+                "Do not default mechanically to 'Yet'. Yet remains valid, but it "
+                "must compete naturally across episodes with direct observations, "
+                "reflective questions, and other connectives. Follow the selected "
+                "Beat 2 bridge style above. If Beat 1 names only a philosopher, "
+                "Beat 2 must explicitly name the concrete subject—partner, parent, "
+                "mother, father, or child—inside that bridge; never postpone the "
+                "subject until Beat 3. When famous-thinker mode is selected, "
+                "state the philosopher and plain idea "
+                "in beat 1 or 2, then connect it to everyday hurt. Never invent a "
+                "quotation. Never use a grandfather, grandmother, father, mother, "
+                "or loose family anecdote as the narrative authority. In "
+                "original-freewriting mode, open with an original universal "
+                "behavioral truth tied directly to the locked theme; do not name "
+                "a thinker or imitate a quotation. POV SUBJECT INTEGRITY: choose "
+                "one unified human "
+                "relationship and never switch it. Relationship scripts stay with "
+                "the same romantic partner dynamic for all eight beats. Parenting "
+                "scripts stay with the same parent-child dynamic for all eight "
+                "beats. A thinker is only the hook, not a second story subject. "
+                "Never jump from father, mother, child, friend, or family to a "
+                "romantic partner, or the reverse. "
+                "SINGLE-CONFLICT UNITY: every beat must deepen only the locked "
+                "conflict above. Never introduce a second flaw, wound, habit, or "
+                "lesson. Parenting scripts must not mix guilt/perfectionism, "
+                "chores, anger/patience, screen distraction, and bedtime control. "
+                "Choose only the locked family tension and keep every behavior, "
+                "cost, reframe, and action causally attached to it. "
+                "Use intentional repetition of "
+                "core anchor words for "
+                "momentum, not eight disconnected sayings. Beats 6–8 must deliver "
+                "one clear, useful lesson or psychological concept earned by the "
+                "story—never a loose motivational slogan. SUBJECT GROUNDING: beat "
+                "1 or beat 2 must name the person plainly—child, parent, partner, "
+                "mother, father, friend, or another concrete subject—before using "
+                "they, them, their, he, or she. Never open with an unclear pronoun. "
+                "Every beat contains 4–6 simple spoken words, "
+                "and the full script contains at most 48 words. CAMERA CONTRACT: "
+                "use in order a wide establishing exterior, architectural interior "
+                "framing, tactile prop detail, dramatic close-up profile, motion "
+                "transit, rain or reflective glass, walking silhouette, and "
+                "expansive panoramic closure. SPATIAL ISOLATION: bedrooms and "
+                "nurseries are strictly indoor, with a cozy interior and wooden "
+                "floorboards. Exterior scenes never contain beds, mattresses, "
+                "dressers, or other indoor furniture. Human subjects stay upright: "
+                "standing, walking, seated properly on furniture, or tucked into "
+                "bed with visible pillows—never lying on floors, rugs, streets, or "
+                "doorsteps, and never crawling or prone."
             )
         else:
             parts.append(lofi_cfg.hook_line_brevity_clause())

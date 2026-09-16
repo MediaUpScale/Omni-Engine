@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from PIL import Image
 
 from agents.mcp.text_model import TextResult, _complete_gemini_flash
@@ -13,10 +15,18 @@ from agents.writer.freeform_writer import (
     _SYSTEM,
     _normalize_total_word_budget,
     _output_contract,
+    _validate_golden_contract,
     system_prompt_for,
 )
 from agents.writer.script_brain import BrainResult, draft_to_script
-from agents.writer.writer_brief import WriterBrief
+from agents.writer.writer_brief import (
+    COGNITIVE_BRIDGE_STYLES,
+    PHILOSOPHICAL_ANCHORS,
+    PSYCHOLOGICAL_REALITY_ANCHORS,
+    WriterBrief,
+    get_narrative_harness,
+    select_single_conflict,
+)
 from core.economic_reel_lofi.niche_presets import (
     PARENTING,
     PARENTING_LOCATION_ANCHOR,
@@ -25,6 +35,7 @@ from core.economic_reel_lofi.niche_presets import (
     build_flux_prompt,
     get_niche_preset,
     inject_prompt_fields,
+    select_celestial_disc_scenes,
     wrap_visual_prompt,
 )
 from core.economic_reel_lofi import config as lofi_cfg
@@ -54,8 +65,10 @@ from core.economic_reel_lofi.visual_concept import _fallback_concept
 from core.economic_reel_lofi.visual_identity import assign_palette_arc
 from core.economic_reel_lofi.assembler import (
     _visual_only,
+    audit_watermark_native_size,
     is_verified_instrumental_bgm,
     list_library_bgm_tracks,
+    render_logo_layer,
 )
 from core.economic_reel_lofi.voiceover import ensure_script_voiceover
 
@@ -64,11 +77,14 @@ def test_emotional_brief_prioritizes_depth_without_literal_props() -> None:
     brief = WriterBrief.from_emotional(theme="detachment", subtheme="quiet_boundary")
     block = brief.assignment_block()
     assert brief.mode == "emotional"
-    assert "award-winning auteur" in block
-    assert "psychological paradox" in block
-    assert "therapy slogans" in block
-    assert "7–11 spoken words" in block
-    assert "Mad-Libs repetition" in block
+    assert "EVERYDAY CADENCE & ANAPHORA" in block
+    assert "Selected anchor" in block
+    assert "Every beat contains 4–6 simple spoken words" in block
+    assert "at most 48 words" in block
+    assert "SUBJECT GROUNDING" in block
+    assert "ONE LOCKED CONFLICT" in block
+    assert "SINGLE-CONFLICT UNITY" in block
+    assert "SPATIAL ISOLATION" in block
 
 
 def test_fast_prompt_embeds_all_six_golden_examples_and_candidate_schema() -> None:
@@ -84,9 +100,13 @@ def test_fast_prompt_embeds_all_six_golden_examples_and_candidate_schema() -> No
     assert "visual_concept" in contract
     assert '"beats": [' in contract
     assert "exactly eight" in _SYSTEM
-    assert "award-winning auteur" in _SYSTEM
-    assert "7–11 naturally spoken words" in _SYSTEM
-    assert "midnight diner" in _SYSTEM
+    assert "4 RULES OF THE GOLDEN SCRIPT" in _SYSTEM
+    assert "Every beat contains 4–6" in _SYSTEM
+    assert "PROVEN MOMMA CIRCLE GOLDEN BLUEPRINT" in _SYSTEM
+    assert "POV SUBJECT INTEGRITY" in _SYSTEM
+    assert "ANAPHORA AND CADENCE" in _SYSTEM
+    assert "before any" in _SYSTEM
+    assert "bathrooms" in _SYSTEM
     assert "Do not default" in _SYSTEM
     assert "cups on tables" in _SYSTEM
 
@@ -98,14 +118,15 @@ def test_parenting_preset_swaps_few_shots_and_aesthetic_wrapper() -> None:
     assert "One day you will put your child down" in prompt
     assert "Never ask a liar why they lied" not in prompt
     assert "parent-child relationship" in prompt
-    assert "rainy subway platform" in prompt
+    assert "train platform" in prompt
+    assert "washrooms" in prompt
     assert get_niche_preset("parenting") is PARENTING
     wrapped = wrap_visual_prompt(
         "A cinematic, melancholic shot of a dimly lit hallway with two umbrellas leaning on separate walls.",
         "relationship",
     )
     assert wrapped.startswith(RELATIONSHIP.aesthetic_prefix)
-    assert "Nostalgic warm palette" in wrapped
+    assert "Nostalgic practical-light palette" in wrapped
     assert "vertical 9:16 full-bleed composition" in wrapped.lower()
     assert "vintage graphic novel poster" in wrapped.lower()
     assert "35mm" not in wrapped.lower()
@@ -138,7 +159,8 @@ def test_draft_to_script_keeps_writer_visual_concepts() -> None:
     inject_prompt_fields(script)
     assert script["niche"] == "relationship"
     assert script["location_anchor"] == "A dim diner booth beside a rain-slicked window"
-    assert "A melancholic wide view" in script["lines"][0]["visual_concept"]
+    assert "A melancholic wide view" in script["lines"][0]["writer_visual_concept"]
+    assert "REQUIRED CAMERA AND POSE" in script["lines"][0]["visual_concept"]
     assert script["lines"][0]["visual_source"] == "writer_single_pass"
 
 
@@ -147,6 +169,7 @@ def test_prompt_fields_are_programmatic_and_single_location_anchored() -> None:
     script = {
         "niche": "relationship",
         "location_anchor": anchor,
+        "celestial_disc_scenes": [1, 8],
         "lines": [
             {
                 "scene": i,
@@ -170,13 +193,49 @@ def test_prompt_fields_are_programmatic_and_single_location_anchored() -> None:
     }
     inject_prompt_fields(script)
     assert script["location_anchor"] == anchor
+    camera_staging = [beat["camera_staging"] for beat in script["lines"]]
+    assert len(set(camera_staging)) == 8
     for i, beat in enumerate(script["lines"], start=1):
-        assert beat["visual_concept"].startswith(anchor)
+        if i in {1, 8}:
+            assert beat["visual_concept"].startswith(anchor)
+        else:
+            assert not beat["visual_concept"].startswith(anchor)
         assert beat["final_positive_prompt"].startswith(RELATIONSHIP.aesthetic_prefix)
-        assert beat["negative_prompt"] == RELATIONSHIP.negative_prompt
         assert "photorealistic" in beat["negative_prompt"]
+        assert beat["celestial_disc_allowed"] is (i in {1, 8})
+        if i in {1, 8}:
+            assert "sun disc, moon disc" not in beat["negative_prompt"]
+            assert beat["lighting_prompt_guard"].startswith("CELESTIAL BUDGET")
+        else:
+            assert "sun disc, moon disc" in beat["negative_prompt"]
+            assert "PRACTICAL LIGHTING ONLY" in beat["final_positive_prompt"]
+            assert beat["lighting_prompt_guard"].startswith(
+                "PRACTICAL-LIGHT-ONLY RETRY"
+            )
         expected_palette = "WARM" if i <= 3 else ("COLD" if i <= 6 else "CONTRAST")
-        assert RISO_STYLE.palettes[expected_palette] in beat["final_positive_prompt"]
+        if i in {1, 8}:
+            assert RISO_STYLE.palettes[expected_palette] in beat["final_positive_prompt"]
+        else:
+            assert "practical-light palette" in beat["final_positive_prompt"].lower()
+            assert "golden hour sunset" not in beat["final_positive_prompt"]
+            assert "blazing orange-amber sun" not in beat["final_positive_prompt"]
+        assert "ANATOMY CONTRACT" in beat["final_positive_prompt"]
+    assert "wide establishing landscape or exterior" in camera_staging[0]
+    assert "architectural interior framing" in camera_staging[1]
+    assert "tactile environmental prop detail" in camera_staging[2]
+    assert "close-up side profile" in camera_staging[3]
+    assert "motion transit" in camera_staging[4]
+    assert "rain or reflective glass" in camera_staging[5]
+    assert "dynamic walking silhouette" in camera_staging[6]
+    assert "expansive panoramic closure" in camera_staging[7]
+    assert "exterior establishing environment" in script["lines"][0]["final_positive_prompt"]
+    assert "strictly architectural interior framing" in script["lines"][1]["final_positive_prompt"]
+    assert "tactile prop in its realistic indoor context" in script["lines"][2]["final_positive_prompt"]
+    assert "intimate interior close-up" in script["lines"][3]["final_positive_prompt"]
+    assert "interior corridor transit" in script["lines"][4]["final_positive_prompt"]
+    assert "indoors behind rain-streaked" in script["lines"][5]["final_positive_prompt"]
+    assert "exterior walking route" in script["lines"][6]["final_positive_prompt"]
+    assert "expansive exterior panorama" in script["lines"][7]["final_positive_prompt"]
 
 
 def test_riso_flux_builder_uses_three_act_palette_and_style_negative() -> None:
@@ -188,16 +247,28 @@ def test_riso_flux_builder_uses_three_act_palette_and_style_negative() -> None:
     assert "white border" in RISO_STYLE.style_negative
     assert "photorealistic" in RISO_STYLE.style_negative
     assert "flat vector" in RISO_STYLE.style_negative
+    assert "bathroom" in RISO_STYLE.style_negative
+    assert "porcelain toilet" in RISO_STYLE.style_negative
+    assert "bed outdoors" in RISO_STYLE.style_negative
+    assert "furniture on street" in RISO_STYLE.style_negative
+    assert "surreal placement" in RISO_STYLE.style_negative
+    assert "lying on floor" in RISO_STYLE.style_negative
+    assert "crawling" in RISO_STYLE.style_negative
+    assert "prone body" in RISO_STYLE.style_negative
+    assert "melted limbs" in RISO_STYLE.style_negative
+    assert "anatomical glitches" in RISO_STYLE.style_negative
     positive, negative = build_flux_prompt("woman waiting beside tea", 7)
     assert positive.startswith(RISO_STYLE.open)
     assert RISO_STYLE.technique.strip() in positive
-    assert RISO_STYLE.palettes["CONTRAST"] in positive
+    assert "warm amber lamps" in positive
+    assert "blazing orange-amber sun" not in positive
     assert RISO_STYLE.linework_guard in positive
     assert "35mm" not in positive.lower()
     assert "vintage graphic novel poster" in positive.lower()
     assert "full-bleed" in positive.lower()
     assert "paper tooth" in positive.lower()
-    assert negative == RISO_STYLE.style_negative
+    assert negative.startswith(RISO_STYLE.style_negative)
+    assert "sun disc, moon disc" in negative
 
 
 def test_full_bleed_crop_removes_generated_paper_margin(tmp_path: Path) -> None:
@@ -232,8 +303,13 @@ def test_parenting_prompt_fields_lock_parent_child_arc() -> None:
 
     assert script["location_anchor"] == "somewhere else"
     for beat in script["lines"]:
-        assert beat["visual_concept"].startswith("somewhere else")
-        assert "soft twilight" in beat["visual_concept"].lower()
+        if beat["scene"] == 8:
+            assert beat["visual_concept"].startswith("somewhere else")
+        elif beat["scene"] == 3:
+            assert "story-relevant prop" in beat["visual_concept"]
+        else:
+            assert "parent and child" in beat["visual_concept"]
+        assert "soft twilight" in beat["writer_visual_concept"].lower()
 
 
 def test_theme_selector_never_repeats_consecutively(tmp_path: Path) -> None:
@@ -302,8 +378,179 @@ def test_theme_selector_never_repeats_consecutively(tmp_path: Path) -> None:
 def test_total_narration_budget_is_normalized_without_llm_repair() -> None:
     lines = ["One two three four five six seven eight nine ten."] * 8
     normalized = _normalize_total_word_budget(lines)
-    assert sum(len(line.split()) for line in normalized) == 79
-    assert all(7 <= len(line.split()) <= 12 for line in normalized)
+    assert sum(len(line.split()) for line in normalized) == 48
+    assert all(4 <= len(line.split()) <= 6 for line in normalized)
+    assert len(normalized[0].split()) <= 6
+
+
+def test_golden_contract_rejects_banned_words_and_bathrooms() -> None:
+    valid_lines = ["Let your partner show true care."] * 8
+    visuals = ["side profile on a rainy porch"] * 8
+
+    _validate_golden_contract(
+        valid_lines,
+        location_anchor="rainy front porch",
+        visuals=visuals,
+    )
+    with pytest.raises(ValueError, match="word counts outside contract"):
+        _validate_golden_contract(
+            ["Seneca said our thoughts hurt us deeply.", *valid_lines[1:]],
+            location_anchor="rainy front porch",
+            visuals=visuals,
+        )
+    with pytest.raises(ValueError, match="forbidden vocabulary"):
+        _validate_golden_contract(
+            [*valid_lines[:-1], "Leave this torment behind right now."],
+            location_anchor="rainy front porch",
+            visuals=visuals,
+        )
+    with pytest.raises(ValueError, match="bathroom staging"):
+        _validate_golden_contract(
+            valid_lines,
+            location_anchor="dim domestic bathroom",
+            visuals=visuals,
+        )
+    with pytest.raises(ValueError, match="ambiguous pronoun"):
+        _validate_golden_contract(
+            ["They left without one last call.", *valid_lines[1:]],
+            location_anchor="rainy front porch",
+            visuals=visuals,
+        )
+    grounded = [
+        "Seneca said we fear shadows.",
+        "A child needs simple comfort.",
+        "They fear being left alone.",
+        *["Let your child feel safe here."] * 5,
+    ]
+    _validate_golden_contract(
+        grounded,
+        location_anchor="cozy bedroom interior",
+        visuals=["wooden floorboards under warm light"] * 8,
+    )
+    with pytest.raises(ValueError, match="indoor furniture"):
+        _validate_golden_contract(
+            valid_lines,
+            location_anchor="rainy city street",
+            visuals=["an empty bed under streetlights", *visuals[1:]],
+        )
+
+
+def test_subject_integrity_rejects_role_switches_and_family_anecdotes() -> None:
+    romantic = ["Let your partner show true care."] * 8
+    parenting = ["Let your child feel safe here."] * 8
+    visuals = ["side profile under a table lamp"] * 8
+    with pytest.raises(ValueError, match="romantic and parenting"):
+        _validate_golden_contract(
+            [*romantic[:4], "Your father waits beside you.", *romantic[5:]],
+            location_anchor="windowless room",
+            visuals=visuals,
+            niche="relationship",
+        )
+    with pytest.raises(ValueError, match="romantic and parenting"):
+        _validate_golden_contract(
+            [*parenting[:4], "Your partner waits beside you.", *parenting[5:]],
+            location_anchor="windowless room",
+            visuals=visuals,
+            niche="parenting",
+        )
+    with pytest.raises(ValueError, match="family anecdote"):
+        _validate_golden_contract(
+            ["My grandfather taught this lesson.", *romantic[1:]],
+            location_anchor="windowless room",
+            visuals=visuals,
+            niche="relationship",
+        )
+
+
+def test_parenting_contract_rejects_multiple_friction_families() -> None:
+    lines = [
+        "Mothers often carry heavy guilt.",
+        "They scrub every dish twice.",
+        "Then anger breaks their patience.",
+        "Their child waits beside them.",
+        "Quiet minutes keep moving past.",
+        "Warm presence matters much more.",
+        "Set that pressure down now.",
+        "Hold your child with calm.",
+    ]
+    with pytest.raises(ValueError, match="multiple emotional frictions"):
+        _validate_golden_contract(
+            lines,
+            location_anchor="windowless family room",
+            visuals=["warm table lamp and upright mother"] * 8,
+            niche="parenting",
+        )
+    assert select_single_conflict(
+        "parenting", "self_compassion", "good_enough_mother"
+    ) == "perfectionism guilt about keeping the home perfect"
+    assert select_single_conflict(
+        "parenting", "presence", "phones_down_eye_contact"
+    ) == "screen distraction stealing present childhood time"
+
+
+def test_narrative_harness_has_deterministic_approved_anchor_branches() -> None:
+    philosophy = get_narrative_harness("relationship", rng=random.Random(1))
+    psychology = get_narrative_harness("parenting", rng=random.Random(2))
+
+    assert philosophy["use_philosophy"] is True
+    assert philosophy["narrative_anchor"] in PHILOSOPHICAL_ANCHORS
+    assert philosophy["narrative_mode"] == "famous_thinker_hook"
+    assert psychology["use_philosophy"] is False
+    assert psychology["narrative_anchor"] in PSYCHOLOGICAL_REALITY_ANCHORS
+    assert psychology["narrative_mode"] == "original_freewriting"
+    assert psychology["narrative_niche"] == "parenting"
+    style_names = {name for name, _ in COGNITIVE_BRIDGE_STYLES}
+    assert philosophy["cognitive_bridge_style"] in style_names
+    assert psychology["cognitive_bridge_style"] in style_names
+    assert philosophy["cognitive_bridge_direction"]
+    thinker_rate = sum(
+        bool(get_narrative_harness("relationship", rng=random.Random(seed))["use_philosophy"])
+        for seed in range(1000)
+    ) / 1000
+    assert 0.60 <= thinker_rate <= 0.80
+
+
+def test_celestial_budget_is_stable_and_limited_to_hook_or_resolution() -> None:
+    script = {
+        "theme": "grief",
+        "subtheme": "learning to carry it",
+        "location_anchor": "rainy coastal cottage",
+    }
+    first = select_celestial_disc_scenes(script)
+    second = select_celestial_disc_scenes(script)
+    assert first == second
+    assert 1 <= len(first) <= 2
+    assert first <= {1, 8}
+    assert select_celestial_disc_scenes(
+        {**script, "celestial_disc_scenes": [8]}
+    ) == {8}
+
+
+def test_non_budget_scenes_strip_celestial_location_cues() -> None:
+    script = {
+        "niche": "relationship",
+        "location_anchor": "dawn porch beside moonlit tracks",
+        "celestial_disc_scenes": [8],
+        "lines": [
+            {"scene": 1, "text": "Simple words fit this test.", "visual_concept": "wide view"},
+            {"scene": 2, "text": "Simple words bridge this test.", "visual_concept": "inside view"},
+            {"scene": 8, "text": "Simple words close this test.", "visual_concept": "wide close"},
+        ],
+    }
+    inject_prompt_fields(script)
+    first = script["lines"][0]["visual_concept"].lower()
+    second = script["lines"][1]["visual_concept"].lower()
+    last = script["lines"][2]["visual_concept"].lower()
+    assert "dawn" not in first and "moonlit" not in first
+    assert "misty overcast morning" in first and "lantern-lit" in first
+    assert second.startswith("windowless architectural interior")
+    assert "tracks" not in second
+    assert last.startswith("dawn porch beside moonlit tracks")
+
+
+def test_lofi_voice_speed_is_meditative() -> None:
+    assert lofi_cfg.tts_speed() == 0.69
+    assert lofi_cfg.VO_INTERLINE_SILENCE_S == 0.60
 
 
 def test_gemini38_provider_uses_only_configured_primary_model() -> None:
@@ -434,10 +681,10 @@ def test_strict_stage1_keeps_archived_judge_and_validator_path() -> None:
     assert validator.call_count >= 1
 
 
-def test_default_beat_contract_allows_twelve_words() -> None:
-    assert lofi_cfg.beat_word_budget(3.0) == 7
-    assert lofi_cfg.beat_word_ceiling(3.0) == 12
-    assert lofi_cfg.thematic_caption_limits() == (12, 84)
+def test_default_beat_contract_caps_seven_words() -> None:
+    assert lofi_cfg.beat_word_budget(3.0) == 6
+    assert lofi_cfg.beat_word_ceiling(3.0) == 7
+    assert lofi_cfg.thematic_caption_limits() == (7, 84)
 
 
 def test_audio_slots_follow_voice_with_calm_floor_and_no_cut() -> None:
@@ -493,7 +740,8 @@ def test_stage3_wraps_writer_concepts_with_niche_aesthetic(tmp_path: Path) -> No
     prompt = script["lines"][0]["visual_prompt"]
     assert prompt.startswith(PARENTING.aesthetic_prefix)
     assert "small shoes waiting by a sunlit doorway" in prompt
-    assert RISO_STYLE.palettes["WARM"] in prompt
+    assert "Nostalgic practical-light palette" in prompt
+    assert "golden hour sunset" not in prompt
     assert "vertical 9:16 full-bleed composition" in prompt.lower()
 
 
@@ -797,16 +1045,18 @@ def test_elastic_timeline_clamps_hook_and_adds_outro_tail(tmp_path: Path) -> Non
         ensure_script_voiceover(state, script, tmp_path)
 
     assert [text for text, _ in generated] == [row["text"] for row in lines]
-    assert generated[0][1] >= 0.95
+    assert all(speed == 0.70 for _, speed in generated)
+    assert all(row["tts_speed"] == 0.69 for row in script["lines"])
+    assert all(row["tts_api_speed"] == 0.70 for row in script["lines"])
     assert state["audio_durations_s"] == measured
     assert state["scene_durations"] == [
-        3.0,
-        2.6,
-        2.7,
+        3.5,
         2.8,
         2.9,
-        2.5,
         3.0,
+        3.1,
+        2.7,
+        3.2,
         4.55,
     ]
 
@@ -837,12 +1087,57 @@ def test_gemini_generator_normalizes_output_path(tmp_path: Path) -> None:
 def test_momma_circle_uses_png_logo_not_text_handle() -> None:
     cfg = lofi_cfg.channel_assembly_cfg("momma_circle")
     assert cfg["use_text_watermark"] is False
+    assert cfg["logo_size_multiplier"] == pytest.approx(0.337)
+    assert cfg["logo_bottom_px"] == 252
+    assert cfg["trim_logo_transparent_padding"] is True
+    assert not lofi_cfg.channel_assembly_cfg("wonder_feed").get(
+        "trim_logo_transparent_padding", False
+    )
     logo = lofi_cfg.resolve_logo_path(
         "momma_circle", Path(__file__).resolve().parents[1]
     )
     assert logo is not None
+    assert logo == (
+        Path(__file__).resolve().parents[1]
+        / "channels_config"
+        / "momma_circle"
+        / "logo"
+        / "logo.png"
+    )
     assert logo.suffix.lower() == ".png"
     assert logo.is_file()
+
+
+def test_momma_circle_logo_trims_padding_and_applies_final_calibration() -> None:
+    cfg = lofi_cfg.channel_assembly_cfg("momma_circle")
+    logo = lofi_cfg.resolve_logo_path(
+        "momma_circle", Path(__file__).resolve().parents[1]
+    )
+    assert logo is not None
+    with Image.open(logo) as source:
+        source_w, source_h = source.size
+    layer = render_logo_layer(
+        logo,
+        opacity=float(cfg["logo_opacity"]),
+        scale=float(cfg["logo_scale"]),
+        bottom_px=int(cfg["logo_bottom_px"]),
+        size_multiplier=float(cfg["logo_size_multiplier"]),
+        trim_transparent_padding=bool(cfg["trim_logo_transparent_padding"]),
+    )
+    audit = audit_watermark_native_size(
+        layer,
+        logo_path=logo,
+        use_text=False,
+        expected_scale=float(cfg["logo_size_multiplier"]),
+    )
+    assert layer is not None
+    assert audit["watermark_native_size"] == 1
+    assert audit["painted_w"] <= round(source_w * 0.337) + 2
+    assert audit["painted_h"] <= round(source_h * 0.337) + 2
+    assert audit["painted_w"] >= 285
+    ys, _ = (layer[..., 3] > 10).nonzero()
+    visible_bottom_inset = layer.shape[0] - 1 - int(ys.max())
+    assert visible_bottom_inset == pytest.approx(252, abs=2)
 
 
 def test_resolve_page_dirs_separates_clips_and_metadata(tmp_path: Path) -> None:
