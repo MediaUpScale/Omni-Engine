@@ -648,6 +648,9 @@ class Theme(_Frozen):
         )
 
 
+YOUTUBE_DESCRIPTION_CTA = "Follow Aiwake for unscripted frontier AI dialectics."
+"""Public YouTube / catalog CTA. End-card lines stay on the fun weighted pool."""
+
 _LEGACY_DESCRIPTION_CTA_RE = re.compile(
     r"Follow (?:Aiwake|Ancient Knowledge) for more hidden mysteries\.?",
     re.IGNORECASE,
@@ -1069,6 +1072,7 @@ __all__ = [
     "VFXConfig",
     "VFXHookConfig",
     "cached_settings",
+    "YOUTUBE_DESCRIPTION_CTA",
     "cta_description_line",
     "ensure_cta_two_line",
     "has_legacy_description_cta",

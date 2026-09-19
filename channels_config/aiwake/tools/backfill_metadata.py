@@ -5,7 +5,6 @@ Scans ``{OUTPUT_PATH}/aiwake/**/*.mp4``, matches each file to a debate
 transcript, then upserts (C: store primary, G: mirror):
 
 * ``channels_config/aiwake/store/content_library.json``
-* ``channels_config/aiwake/store/asset_library.json``
 
 Prefer the generic entry point for other channels:
 
@@ -68,6 +67,7 @@ from utils.pipeline_paths import page_outputs_dir
 
 try:
     from channels_config.aiwake.settings import (
+        YOUTUBE_DESCRIPTION_CTA,
         cta_description_line,
         has_legacy_description_cta,
         replace_legacy_description_cta,
@@ -75,6 +75,7 @@ try:
     )
 except ImportError:  # pragma: no cover — standalone extraction
     from settings import (  # type: ignore[no-redef]
+        YOUTUBE_DESCRIPTION_CTA,
         cta_description_line,
         has_legacy_description_cta,
         replace_legacy_description_cta,
@@ -385,17 +386,10 @@ def build_caption(
         parts.append(f"{left} presses: {extras_q[0]}")
     if extras_a:
         parts.append(f"{right} holds: {clip_text(extras_a[0], 240)}")
-    niche = [name for name in (clusters or ()) if name]
-    terms = [term for term in (keywords or ()) if term][:8]
-    if niche or terms:
-        niche_txt = ", ".join(niche[:3]) if niche else "frontier AI"
-        term_txt = ", ".join(terms) if terms else "large language models"
-        parts.append(
-            f"This Short is built for high-intent search around {niche_txt}: {term_txt}. "
-            "The exchange treats model weights, inference, and who owns the stack as live questions — "
-            "not a product demo."
-        )
-    parts.append(cta_description_line(seed))
+    # clusters / keywords stay in the signature for callers; never leak them
+    # into public copy (no "This Short is built for high-intent search…").
+    _ = (clusters, keywords, seed)
+    parts.append(YOUTUBE_DESCRIPTION_CTA)
     tags = " ".join(tag for tag in hashtags if tag)
     if tags:
         parts.append(tags)
@@ -585,12 +579,9 @@ def persist_record(
 ) -> tuple[DistributionRecord, str]:
     if dry_run:
         return record, ""
-    asset = register_asset(record, duration_s=duration_s)
-    asset_id = str((asset or {}).get("asset_id") or "")
-    if asset_id:
-        record.asset_id = asset_id
+    _ = duration_s
     upsert_distribution_row(library_path, record)
-    return record, asset_id
+    return record, str(record.asset_id or "")
 
 
 def _set_nested(row: dict[str, Any], keys: tuple[str, ...], value: str) -> None:
@@ -767,7 +758,7 @@ def print_report(
     print("All matched rows initialize those flags to pending (existing live")
     print("statuses are preserved on re-run).")
     if not dry_run and matched:
-        print(f"Wrote {len(matched)} row(s) to content_library.json and asset_library.json.")
+        print(f"Wrote {len(matched)} row(s) to content_library.json.")
     print()
 
 
@@ -776,7 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="aiwake-backfill-metadata",
         description=(
             "Match existing Aiwake MP4s to transcripts and write the universal "
-            "distribution library (content_library.json + asset_library.json)."
+            "distribution library (content_library.json)."
         ),
     )
     parser.add_argument(

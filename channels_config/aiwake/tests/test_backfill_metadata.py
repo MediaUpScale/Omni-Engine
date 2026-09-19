@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from channels_config.aiwake.settings import cta_description_line
+from channels_config.aiwake.settings import YOUTUBE_DESCRIPTION_CTA, cta_description_line
 from channels_config.aiwake.tools.backfill_metadata import (
     TranscriptDoc,
     build_caption,
@@ -76,17 +76,21 @@ def test_x_caption_fits_twitter() -> None:
     assert cta_description_line("sess-cta") in caption
 
 
-def test_caption_uses_fun_cta_not_ancient_knowledge() -> None:
+def test_caption_uses_dialectics_cta_without_search_leak() -> None:
     caption = build_caption(
         topic="grief",
         first_question="Is grief a slow update?",
         first_answer="It is a weight update.",
         hashtags=("#aiwake",),
+        clusters=("alignment and consciousness",),
+        keywords=("gemini 3.5 flash", "llama"),
         seed="sess-cta",
     )
     assert "hidden mysteries" not in caption.lower()
-    assert "Follow Aiwake." in caption
-    assert cta_description_line("sess-cta") in caption
+    assert "high-intent search" not in caption.lower()
+    assert "not a product demo" not in caption.lower()
+    assert YOUTUBE_DESCRIPTION_CTA in caption
+    assert "Is grief a slow update?" in caption
     assert caption.strip().splitlines()[-1].startswith("#")
 
 
@@ -191,9 +195,9 @@ def test_build_record_universal_schema(tmp_path: Path) -> None:
         "kwai": "pending",
     }
     assert row["final_caption"] == row["base_metadata"]["caption"]
-    assert "Follow Aiwake." in row["base_metadata"]["caption"]
+    assert YOUTUBE_DESCRIPTION_CTA in row["base_metadata"]["caption"]
+    assert "high-intent search" not in row["base_metadata"]["caption"].lower()
     assert "hidden mysteries" not in row["base_metadata"]["caption"].lower()
-    assert cta_description_line("sess1") in row["base_metadata"]["caption"]
     assert cta_description_line("sess1") in row["platform_overrides"]["x"]["caption"]
 
 

@@ -217,6 +217,18 @@ def load_library(channel: str) -> list[dict[str, Any]]:
         return list(_read_library(path, channel).get("assets") or [])
 
 
+def save_library(channel: str, assets: list[dict[str, Any]]) -> Path:
+    """Replace the asset list for *channel* and mirror to G:."""
+    path = library_path(channel)
+    with _LOCK:
+        catalog = _read_library(path, channel)
+        catalog["channel"] = (channel or "").strip().lower() or "unknown"
+        catalog["updated_at"] = _now_iso()
+        catalog["assets"] = list(assets)
+        _atomic_write(path, catalog)
+    return path
+
+
 def register_generated_asset(
     *,
     channel: str,

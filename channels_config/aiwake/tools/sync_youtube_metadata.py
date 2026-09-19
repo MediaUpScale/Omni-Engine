@@ -48,6 +48,7 @@ try:
         rewrite_library_legacy_ctas,
         run_backfill,
     )
+    from channels_config.aiwake.tools.library_sanitize import sanitize_content_library
     from channels_config.aiwake.tools.schedule_youtube import (
         _nested,
         map_youtube_payload,
@@ -59,6 +60,7 @@ except ImportError:  # pragma: no cover
         rewrite_library_legacy_ctas,
         run_backfill,
     )
+    from library_sanitize import sanitize_content_library  # type: ignore[no-redef]
     from schedule_youtube import (  # type: ignore[no-redef]
         _nested,
         map_youtube_payload,
@@ -313,6 +315,8 @@ def run_sync(
     else:
         library_path = content_library_path(CHANNEL_ID, outputs_dir=media_root)
     rewritten, rows = rewrite_library_legacy_ctas(library_path, dry_run=dry_run)
+    sanitized, rows = sanitize_content_library(library_path, dry_run=dry_run)
+    rewritten += sanitized
     if not rows:
         rows = load_distribution_library(library_path)
     result = push_youtube_metadata(
