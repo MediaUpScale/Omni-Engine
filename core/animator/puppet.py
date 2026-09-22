@@ -77,12 +77,15 @@ _EYE_LAYER_BY_STATE = {0: "eyes_open", 1: "eyes_half", 2: "eyes_blink"}
 #: 3-level mouth instead of a phonetic track.
 _STATE_VISEME = {0: "A", 1: "C", 2: "D"}
 _EMOTION_BROW_ANGLES = {
-    "skeptical": (0.0, 0.0),
+    "skeptical": (14.0, -14.0),
     "neutral": (0.0, 0.0),
-    "inquisitor": (18.0, -18.0),
-    "resolute": (3.0, -3.0),
-    "conceded": (-18.0, 18.0),
-    "defeated": (-18.0, 18.0),
+    "inquisitor": (-16.0, 16.0),
+    "resolute": (0.0, 0.0),
+    "conceded": (14.0, -14.0),
+    "defeated": (14.0, -14.0),
+    "disbelief": (14.0, -14.0),
+    "troubled": (14.0, -14.0),
+    "concerned": (14.0, -14.0),
 }
 BROW_STATES: tuple[str, ...] = (
     "neutral",
@@ -96,6 +99,8 @@ BROW_STATES: tuple[str, ...] = (
 def emotion_brow_angles(emotion: str, pulse_deg: float = 0.0) -> tuple[float, float]:
     """Legacy numeric telemetry for callers migrating to brow sprites."""
     baseline = _EMOTION_BROW_ANGLES.get((emotion or "neutral").lower(), (0.0, 0.0))
+    if baseline == (0.0, 0.0):
+        return baseline
     pulse = float(np.clip(pulse_deg, 0.0, 1.5))
     return tuple(
         angle + (pulse if angle >= 0.0 else -pulse)
@@ -105,14 +110,20 @@ def emotion_brow_angles(emotion: str, pulse_deg: float = 0.0) -> tuple[float, fl
 
 def emotion_brow_state(emotion: str) -> str:
     state = (emotion or "neutral").strip().lower()
-    if state in {"defeated", "stressed"}:
+    if state in {
+        "defeated",
+        "stressed",
+        "disbelief",
+        "troubled",
+        "concerned",
+    }:
         return "conceded"
     return state if state in BROW_STATES else "neutral"
 
 
 def emotion_rest_mouth_state(emotion: str) -> str:
     state = (emotion or "neutral").strip().lower()
-    if state == "inquisitor":
+    if state in {"inquisitor", "confident"}:
         return "smug_smile"
     if state in {"conceded", "defeated", "stressed"}:
         return "stressed_grimace"
@@ -129,6 +140,8 @@ class PuppetSkin:
     layer_files: dict[str, str]
     reference_canvas_size: tuple[int, int] = (480, 760)
     eye_bboxes: tuple[tuple[int, int, int, int], ...] = ()
+    mouth_style: str = "ghibli_mecha"
+    palette: dict[str, str] | None = None
 
     @classmethod
     def load(cls, puppet_dir: Path) -> "PuppetSkin":
@@ -151,7 +164,7 @@ class PuppetSkin:
         manifest_path = puppet_dir / "puppet.json"
         if not manifest_path.is_file():
             _LOG.info("no puppet.json at %s — generating a default skin", puppet_dir)
-            ensure_puppet_manifest(puppet_dir)
+        ensure_puppet_manifest(puppet_dir)
         skin = cls.load(puppet_dir)
         skin.ensure_assets()
         return skin
@@ -159,10 +172,58 @@ class PuppetSkin:
     @classmethod
     def _from_manifest(cls, data: dict, root: Path) -> "PuppetSkin":
         anchors_raw = data.get("anchors", {})
-        default_w = _DEFAULT_CANVAS_SIZE[0]
+        canvas_raw = data.get("canvas_size", _DEFAULT_CANVAS_SIZE)
+        reference_canvas_size = _as_vec2(canvas_raw)
+        default_w = reference_canvas_size[0]
+        calibration = data.get("calibration", {})
+        eye_bboxes = tuple(
+            tuple(int(value) for value in box)
+            for box in calibration.get("eye_bboxes", ())
+            if len(box) == 4
+        )
+        legacy_eyes = _as_vec2(
+            anchors_raw.get("eyes", [default_w // 2, 230])
+        )
+        if len(eye_bboxes) >= 2:
+            inferred_left_eye = (
+                (eye_bboxes[0][0] + eye_bboxes[0][2]) // 2,
+                (eye_bboxes[0][1] + eye_bboxes[0][3]) // 2,
+            )
+            inferred_right_eye = (
+                (eye_bboxes[1][0] + eye_bboxes[1][2]) // 2,
+                (eye_bboxes[1][1] + eye_bboxes[1][3]) // 2,
+            )
+            inferred_radius = int(
+                round(
+                    sum(
+                        min(box[2] - box[0], box[3] - box[1]) / 2.0
+                        for box in eye_bboxes[:2]
+                    )
+                    / 2.0
+                )
+            )
+        else:
+            inferred_radius = int(anchors_raw.get("eye_radius", 55))
+            inferred_left_eye = (
+                legacy_eyes[0] - inferred_radius,
+                legacy_eyes[1],
+            )
+            inferred_right_eye = (
+                legacy_eyes[0] + inferred_radius,
+                legacy_eyes[1],
+            )
         anchors = PuppetAnchors(
             mouth=_as_vec2(anchors_raw.get("mouth", [default_w // 2, 320])),
-            eyes=_as_vec2(anchors_raw.get("eyes", [default_w // 2, 230])),
+            left_eye=_as_vec2(
+                anchors_raw.get("left_eye", inferred_left_eye)
+            ),
+            right_eye=_as_vec2(
+                anchors_raw.get("right_eye", inferred_right_eye)
+            ),
+            eye_radius=max(
+                1,
+                int(anchors_raw.get("eye_radius", inferred_radius)),
+            ),
             head_pivot=_as_vec2(anchors_raw.get("head_pivot", [default_w // 2, 260])),
             neck_pivot=_as_vec2(
                 anchors_raw.get(
@@ -207,14 +268,12 @@ class PuppetSkin:
             key = rest_mouth_layer_key(state)
             layer_files[key] = resolve_file(key)
 
-        canvas_raw = data.get("canvas_size", _DEFAULT_CANVAS_SIZE)
-        reference_canvas_size = _as_vec2(canvas_raw)
-        eye_bboxes = tuple(
-            tuple(int(value) for value in box)
-            for box in data.get("calibration", {}).get("eye_bboxes", ())
-            if len(box) == 4
-        )
         character_id = str(data.get("character_id") or root.name)
+        palette = {
+            str(key): str(value)
+            for key, value in (data.get("palette") or {}).items()
+            if isinstance(value, str)
+        }
         return cls(
             character_id=character_id,
             anchors=anchors,
@@ -223,6 +282,8 @@ class PuppetSkin:
             layer_files=layer_files,
             reference_canvas_size=reference_canvas_size,
             eye_bboxes=eye_bboxes,
+            mouth_style=str(data.get("mouth_style") or "ghibli_mecha"),
+            palette=palette,
         )
 
     def layer_path(self, key: str) -> Path:
@@ -391,6 +452,25 @@ class PuppetRig:
             int(round(self.skin.anchors.neck_pivot[0] * scale_x)),
             int(round(self.skin.anchors.neck_pivot[1] * scale_y)),
         )
+        self._eye_centers = (
+            (
+                int(round(self.skin.anchors.left_eye[0] * scale_x)),
+                int(round(self.skin.anchors.left_eye[1] * scale_y)),
+            ),
+            (
+                int(round(self.skin.anchors.right_eye[0] * scale_x)),
+                int(round(self.skin.anchors.right_eye[1] * scale_y)),
+            ),
+        )
+        self._eye_radius = max(
+            1,
+            int(
+                round(
+                    self.skin.anchors.eye_radius
+                    * ((scale_x + scale_y) * 0.5)
+                )
+            ),
+        )
         self._eye_bboxes = tuple(
             (
                 int(round(x0 * scale_x)),
@@ -401,7 +481,7 @@ class PuppetRig:
             for x0, y0, x1, y1 in self.skin.eye_bboxes
         )
         self._brow_cache: dict[
-            tuple[str, bool],
+            str,
             tuple[np.ndarray, tuple[int, int, int, int]] | None,
         ] = {}
         self._articulated_head_cache: OrderedDict[
@@ -566,57 +646,60 @@ class PuppetRig:
         state: str,
         emphasized: bool = False,
     ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
-        """Build one of five hand-inked Ghibli mecha-brow sprite states.
-
-        Each state has its own curved polygon silhouette. No sprite is rotated,
-        so the result reads as expressive face art rather than clock hands.
-        """
+        """Build anti-aliased brow bars locked to the optical-lens rims."""
         brow_state = emotion_brow_state(state)
-        key = (brow_state, bool(emphasized))
+        key = brow_state
         if key in self._brow_cache:
             return self._brow_cache[key]
-        if len(self._eye_bboxes) < 2:
+        if len(self._eye_centers) < 2:
             self._brow_cache[key] = None
             return None
 
-        gemini = "gemini" in self.skin.character_id.lower()
-        outline = (21, 32, 38, 255) if gemini else (43, 26, 21, 255)
+        ink_hex = str(
+            (self.skin.palette or {}).get("ink_outline") or "#152026"
+        ).lstrip("#")
+        try:
+            outline = (
+                int(ink_hex[0:2], 16),
+                int(ink_hex[2:4], 16),
+                int(ink_hex[4:6], 16),
+                255,
+            )
+        except (TypeError, ValueError):
+            outline = (21, 32, 38, 255)
         layer = Image.new("RGBA", self.canvas_size, (0, 0, 0, 0))
-        for index, (x0, y0, x1, y1) in enumerate(self._eye_bboxes[:2]):
-            eye_w = x1 - x0
-            plate_w = max(58, int(round(eye_w * 0.78)))
-            plate_h = 26
+        for index, (eye_x, eye_y) in enumerate(self._eye_centers[:2]):
+            bar_w = max(48, int(round(self._eye_radius * 1.45)))
             scale = 4
             pad = 36
+            patch_h = max(52, int(round(self._eye_radius * 0.70)))
             patch = Image.new(
                 "RGBA",
-                ((plate_w + pad * 2) * scale, (plate_h + pad * 2) * scale),
+                ((bar_w + pad * 2) * scale, (patch_h + pad * 2) * scale),
                 (0, 0, 0, 0),
             )
             draw = ImageDraw.Draw(patch, "RGBA")
             left = float(pad * scale)
-            right = float((pad + plate_w) * scale)
-            center = float((pad + plate_h // 2) * scale)
+            right = float((pad + bar_w) * scale)
+            center = float((pad + patch_h // 2) * scale)
             inner_is_right = index == 0
 
-            angle_deg = 0.0
-            if brow_state == "skeptical":
-                angle_deg = -9.0 if index == 0 else 0.0
-            elif brow_state == "inquisitor":
-                angle_deg = 18.0 + (2.0 if emphasized else 0.0)
-            elif brow_state == "resolute":
-                angle_deg = 3.0 + (1.0 if emphasized else 0.0)
-            elif brow_state == "conceded":
-                angle_deg = -18.0 - (2.0 if emphasized else 0.0)
-
-            delta_y = np.tan(np.deg2rad(abs(angle_deg))) * plate_w * scale
-            inner_y = center + (delta_y if angle_deg > 0 else -delta_y)
+            if brow_state == "inquisitor":
+                inner_delta = np.tan(np.deg2rad(16.0)) * bar_w * scale
+            elif brow_state in {"conceded", "skeptical"}:
+                inner_delta = -np.tan(np.deg2rad(14.0)) * bar_w * scale
+            else:
+                inner_delta = 0.0
+            inner_y = center + inner_delta
             outer_point = (left, center)
             inner_point = (right, inner_y)
             if not inner_is_right:
                 outer_point = (right, center)
                 inner_point = (left, inner_y)
-            ink_width = 8 * scale
+            stroke_px = (
+                7.5 if "gemini" in self.skin.character_id.lower() else 5.5
+            )
+            ink_width = max(1, int(round(stroke_px * scale)))
             draw.line(
                 [outer_point, inner_point],
                 fill=outline,
@@ -629,16 +712,16 @@ class PuppetRig:
                     fill=outline,
                 )
             patch = patch.resize(
-                (plate_w + pad * 2, plate_h + pad * 2),
+                (bar_w + pad * 2, patch_h + pad * 2),
                 Image.Resampling.LANCZOS,
             )
-            center_x = (x0 + x1) // 2
-            center_y = y0 - max(5, plate_h // 3) + 18
-            if (self.skin.character_id.lower().find("gemini") >= 0 and index == 1):
-                center_y += 4
+            brow_y = eye_y - self._eye_radius - 4
             layer.alpha_composite(
                 patch,
-                (center_x - patch.width // 2, center_y - patch.height // 2),
+                (
+                    eye_x - patch.width // 2,
+                    brow_y - (pad + patch_h // 2),
+                ),
             )
 
         rgba = np.asarray(layer, dtype=np.uint8)
@@ -655,6 +738,7 @@ class PuppetRig:
         eye_state: int,
         brow_state: str,
         brow_emphasized: bool,
+        rest_mouth_state: str | None = None,
         angle_deg: float,
     ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
         """Return a cached, neck-pivoted head crop with all facial sprites attached."""
@@ -663,13 +747,14 @@ class PuppetRig:
             shape = REST_VISEME
         state = emotion_brow_state(brow_state)
         angle = float(np.clip(round(float(angle_deg) / 0.3) * 0.3, -1.2, 1.2))
-        cache_key = (shape, int(eye_state), state, bool(brow_emphasized), angle)
+        rest_state = rest_mouth_state or emotion_rest_mouth_state(brow_state)
+        cache_rest_state = rest_state if shape == REST_VISEME else ""
+        cache_key = (shape, int(eye_state), state, cache_rest_state, angle)
         cached = self._articulated_head_cache.get(cache_key)
         if cached is not None:
             self._articulated_head_cache.move_to_end(cache_key)
             return cached
 
-        rest_state = emotion_rest_mouth_state(brow_state)
         head = (
             self._rest_head(rest_state)
             if shape == REST_VISEME

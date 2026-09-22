@@ -74,11 +74,14 @@ CANVAS_SIZE = (480, 760)
 V2_CANVAS_SIZE = (720, 1080)
 SHARED_BACKGROUND_DIRNAME = "shared_backgrounds"
 SHARED_PANORAMA_FILENAME = "aiwake_arena_panorama_v2.png"
-ARTIST_ASSET_REVISION = 10
+ARTIST_ASSET_REVISION = 13
 _ANCHORS = {
     "head_pivot": [240, 250],
     "neck_pivot": [240, 370],
     "eyes": [240, 222],
+    "left_eye": [190, 222],
+    "right_eye": [290, 222],
+    "eye_radius": 50,
     "mouth": [240, 300],
 }
 
@@ -187,6 +190,7 @@ def ensure_puppet_manifest(puppet_dir: Path) -> Path:
     puppet_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = puppet_dir / "puppet.json"
     if manifest_path.is_file():
+        _upgrade_puppet_factory_manifest(manifest_path)
         return manifest_path
     character_id = puppet_dir.name
     manifest = _manifest_for(character_id)
@@ -197,22 +201,114 @@ def ensure_puppet_manifest(puppet_dir: Path) -> Path:
             canvas_size = body.size
     scale_x = canvas_size[0] / float(CANVAS_SIZE[0])
     scale_y = canvas_size[1] / float(CANVAS_SIZE[1])
-    anchors = {
-        name: [int(round(point[0] * scale_x)), int(round(point[1] * scale_y))]
-        for name, point in manifest["anchors"].items()
-    }
+    anchors: dict[str, object] = {}
+    for name, value in manifest["anchors"].items():
+        if name == "eyes":
+            continue
+        if name == "eye_radius":
+            anchors[name] = int(
+                round(float(value) * ((scale_x + scale_y) * 0.5))
+            )
+        else:
+            point = value
+            anchors[name] = [
+                int(round(point[0] * scale_x)),
+                int(round(point[1] * scale_y)),
+            ]
     layers = {key: f"{key}.png" for key in ALL_LAYER_KEYS}
     payload = {
         "character_id": manifest["character_id"],
         "skin_version": manifest.get("skin_version", "unversioned"),
         "canvas_size": list(canvas_size),
         "anchors": anchors,
+        "mouth_style": "ghibli_mecha",
+        "palette": _puppet_factory_palette(manifest.get("palette") or {}),
         "theme": manifest["theme"],
         "layers": layers,
     }
     manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     _LOG.info("wrote default puppet manifest -> %s", manifest_path)
     return manifest_path
+
+
+def _color_hex(value, fallback: str) -> str:
+    if isinstance(value, str) and len(value.lstrip("#")) == 6:
+        return f"#{value.lstrip('#').upper()}"
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        return "#%02X%02X%02X" % tuple(int(channel) for channel in value[:3])
+    return fallback
+
+
+def _puppet_factory_palette(raw: dict) -> dict[str, str]:
+    return {
+        "ink_outline": _color_hex(
+            raw.get("ink_outline", raw.get("shell_dark")),
+            "#152026",
+        ),
+        "accent_color": _color_hex(
+            raw.get("accent_color", raw.get("accent")),
+            "#00F0FF",
+        ),
+        "casing_color": _color_hex(
+            raw.get("casing_color", raw.get("shell")),
+            "#5A858D",
+        ),
+        "cavity_interior": _color_hex(
+            raw.get("cavity_interior", raw.get("visor")),
+            "#0E171C",
+        ),
+        "teeth_color": _color_hex(
+            raw.get("teeth_color", raw.get("accent2")),
+            "#E8ECEE",
+        ),
+    }
+
+
+def _upgrade_puppet_factory_manifest(manifest_path: Path) -> None:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    anchors = dict(payload.get("anchors") or {})
+    calibration = payload.get("calibration") or {}
+    eye_bboxes = calibration.get("eye_bboxes") or ()
+    legacy_eyes = anchors.get("eyes") or [240, 222]
+    if len(eye_bboxes) >= 2:
+        centers = [
+            [
+                (int(box[0]) + int(box[2])) // 2,
+                (int(box[1]) + int(box[3])) // 2,
+            ]
+            for box in eye_bboxes[:2]
+        ]
+        radius = int(
+            round(
+                sum(
+                    min(int(box[2]) - int(box[0]), int(box[3]) - int(box[1]))
+                    / 2
+                    for box in eye_bboxes[:2]
+                )
+                / 2
+            )
+        )
+    else:
+        radius = int(anchors.get("eye_radius") or 55)
+        centers = [
+            [int(legacy_eyes[0]) - radius, int(legacy_eyes[1])],
+            [int(legacy_eyes[0]) + radius, int(legacy_eyes[1])],
+        ]
+    anchors.setdefault("left_eye", centers[0])
+    anchors.setdefault("right_eye", centers[1])
+    anchors.setdefault("eye_radius", radius)
+    anchors.pop("eyes", None)
+    payload["anchors"] = anchors
+    payload.setdefault("mouth_style", "ghibli_mecha")
+    character_id = str(payload.get("character_id") or manifest_path.parent.name)
+    default_palette = (_manifest_for(character_id).get("palette") or {})
+    palette = dict(default_palette)
+    palette.update(payload.get("palette") or {})
+    payload["palette"] = _puppet_factory_palette(palette)
+    manifest_path.write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def archive_v1_retro_skins(*, puppets_dir: Path | None = None) -> dict[str, Path]:
@@ -732,17 +828,30 @@ def _draw_viseme(
             smile = [
                 (mx - half_w, my - 8),
                 (mx + half_w, my - 8),
-                (mx + int(half_w * 0.72), my + 16),
-                (mx - int(half_w * 0.72), my + 16),
+                (mx + 3, my + 20),
+                (mx - 3, my + 20),
             ]
-            draw.polygon(smile, fill=cavity_fill, outline=(*shell_dark, 255))
-            draw.rounded_rectangle(
-                [mx - half_w + 5, my - 5, mx + half_w - 5, my + 3],
-                radius=3,
+            draw.polygon(smile, fill=cavity_fill)
+            inner_top = my - 8 + lip_width + 1
+            inner_bottom = my + 20 - lip_width
+            teeth_bottom = inner_top + (inner_bottom - inner_top) * 0.30
+            inset = lip_width + 2
+            draw.polygon(
+                [
+                    (mx - half_w + inset, inner_top),
+                    (mx + half_w - inset, inner_top),
+                    (mx + 6, teeth_bottom),
+                    (mx - 6, teeth_bottom),
+                ],
                 fill=teeth,
             )
-            for tx in range(mx - half_w + 14, mx + half_w - 5, 13):
-                draw.line([(tx, my - 5), (tx, my + 3)], fill=(*shell_dark, 220), width=1)
+            for tx in range(mx - half_w + inset + 8, mx + half_w - inset, 12):
+                draw.line(
+                    [(tx, inner_top + 1), (tx, teeth_bottom - 1)],
+                    fill=(*shell_dark, 220),
+                    width=1,
+                )
+            draw.line(smile + [smile[0]], fill=(*shell_dark, 255), width=lip_width)
         elif viseme == "X" and rest_state == "stressed_grimace":
             bounds = [mx - half_w, my - 9, mx + half_w, my + 9]
             draw.rounded_rectangle(
@@ -1055,30 +1164,59 @@ def _draw_ghibli_mouth_patch(
         y = cy + (2 * scale if viseme == "A" else 0)
         if viseme == "X" and rest_state == "smug_smile":
             half = seam_w * scale * 0.50
+            top_y = y - 16 * scale
+            bottom_y = y + 40 * scale
             smile = [
-                (cx - half, y - 16 * scale),
-                (cx + half, y - 16 * scale),
-                (cx + half * 0.60, y + 36 * scale),
-                (cx - half * 0.60, y + 36 * scale),
+                (cx - half, top_y),
+                (cx + half, top_y),
+                (cx + 4 * scale, bottom_y),
+                (cx - 4 * scale, bottom_y),
             ]
-            draw.polygon(smile, fill=cavity)
-            draw.line(smile + [smile[0]], fill=outline, width=outline_w, joint="curve")
-            tooth_row = [
-                (cx - half + 7 * scale, y - 12 * scale),
-                (cx + half - 7 * scale, y - 12 * scale),
-                (cx + half * 0.82, y + 6 * scale),
-                (cx - half * 0.82, y + 6 * scale),
+            cavity_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            ImageDraw.Draw(cavity_layer, "RGBA").polygon(smile, fill=cavity)
+            inset = outline_w * 0.5 + 2 * scale
+            inner_top = top_y + inset
+            inner_span = (bottom_y - inset) - inner_top
+            teeth_bottom = inner_top + inner_span * 0.30
+
+            def _wall_x(at_y: float, *, left: bool) -> float:
+                span = bottom_y - top_y
+                progress = 0.0 if span <= 0 else (at_y - top_y) / span
+                if left:
+                    return (cx - half) + ((cx - 4 * scale) - (cx - half)) * progress
+                return (cx + half) + ((cx + 4 * scale) - (cx + half)) * progress
+
+            tooth = [
+                (_wall_x(inner_top, left=True) + inset, inner_top),
+                (_wall_x(inner_top, left=False) - inset, inner_top),
+                (_wall_x(teeth_bottom, left=False) - inset, teeth_bottom),
+                (_wall_x(teeth_bottom, left=True) + inset, teeth_bottom),
             ]
-            draw.polygon(tooth_row, fill=teeth)
-            row_left = cx - half + 9 * scale
-            row_right = cx + half - 9 * scale
+            teeth_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            teeth_draw = ImageDraw.Draw(teeth_layer, "RGBA")
+            teeth_draw.polygon(tooth, fill=teeth)
             for tooth_index in range(1, 5):
-                tx = row_left + ((row_right - row_left) * tooth_index / 5.0)
-                draw.line(
-                    [(tx, y - 12 * scale), (tx, y + 6 * scale)],
+                frac = tooth_index / 5.0
+                x_top = tooth[0][0] + (tooth[1][0] - tooth[0][0]) * frac
+                x_bottom = tooth[3][0] + (tooth[2][0] - tooth[3][0]) * frac
+                teeth_draw.line(
+                    [(x_top, inner_top + scale), (x_bottom, teeth_bottom - scale)],
                     fill=outline,
-                    width=scale,
+                    width=max(1, scale),
                 )
+            import cv2  # noqa: PLC0415
+
+            cavity_px = np.array(cavity_layer)
+            teeth_px = np.array(teeth_layer)
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (max(3, int(outline_w)), max(3, int(outline_w))),
+            )
+            inner_mask = cv2.erode(cavity_px[..., 3], kernel, iterations=1)
+            teeth_px[..., 3] = np.minimum(teeth_px[..., 3], inner_mask)
+            canvas.alpha_composite(cavity_layer)
+            canvas.alpha_composite(Image.fromarray(teeth_px))
+            draw.line(smile + [smile[0]], fill=outline, width=outline_w, joint="curve")
         elif viseme == "X" and rest_state == "stressed_grimace":
             half = seam_w * scale * 0.62
             bounds = (
@@ -1353,7 +1491,7 @@ def generate_ghibli_llama_assets(puppet_dir: Path) -> dict[str, object]:
         raise ValueError(f"Ghibli head/body canvases must match: head={head.size}, body={body.size}")
 
     plate_bbox, detected_mouth_anchor = _detect_ghibli_chin_plate(head)
-    mouth_anchor = (detected_mouth_anchor[0] - 18, detected_mouth_anchor[1])
+    mouth_anchor = (detected_mouth_anchor[0] - 26, detected_mouth_anchor[1])
     head_digest = hashlib.sha256(head_path.read_bytes()).hexdigest()
     mouths_dir = puppet_dir / "mouths"
     mouths_dir.mkdir(parents=True, exist_ok=True)
@@ -1393,6 +1531,16 @@ def generate_ghibli_llama_assets(puppet_dir: Path) -> dict[str, object]:
         layer.save(mouths_dir / f"{rest_mouth_layer_key(state)}.png")
 
     eye_bboxes = ((330, 935, 540, 1175), (680, 905, 895, 1150))
+    eye_centers = [
+        [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2]
+        for box in eye_bboxes
+    ]
+    eye_radius = int(
+        round(
+            sum(min(box[2] - box[0], box[3] - box[1]) / 2 for box in eye_bboxes)
+            / len(eye_bboxes)
+        )
+    )
     # The artist head already contains its optical sensors. Open is
     # transparent; half/closed overlays are matching dark-bronze eyelids.
     transparent = Image.new("RGBA", head.size, (0, 0, 0, 0))
@@ -1419,14 +1567,21 @@ def generate_ghibli_llama_assets(puppet_dir: Path) -> dict[str, object]:
             "asset_profile": "ghibli_cel_v2",
             "asset_revision": ARTIST_ASSET_REVISION,
             "canvas_size": list(head.size),
+            "mouth_style": "ghibli_mecha",
+            "palette": {
+                "ink_outline": "#2B1A15",
+                "accent_color": "#FFB300",
+                "casing_color": "#8A5A38",
+                "cavity_interior": "#120C08",
+                "teeth_color": "#F4E6C7",
+            },
             "anchors": {
                 "head_pivot": [head.size[0] // 2, int(round(head.size[1] * 0.40))],
                 "neck_pivot": [detected_mouth_anchor[0] + 45, plate_bbox[3] - 63],
-                "eyes": [
-                    detected_mouth_anchor[0],
-                    int(round(plate_bbox[1] - plate_height * 0.58)),
-                ],
                 "mouth": list(mouth_anchor),
+                "left_eye": eye_centers[0],
+                "right_eye": eye_centers[1],
+                "eye_radius": eye_radius,
             },
             "calibration": {
                 "chin_plate_bbox": list(plate_bbox),
@@ -1500,7 +1655,7 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
         (plate_bbox[0] + plate_bbox[2]) // 2 + 75,
         (plate_bbox[1] + plate_bbox[3]) // 2 + 55,
     )
-    mouth_anchor = (prior_mouth_anchor[0] + 18, prior_mouth_anchor[1] - 20)
+    mouth_anchor = (prior_mouth_anchor[0] + 28, prior_mouth_anchor[1] - 20)
     neck_pivot = (
         (plate_bbox[0] + plate_bbox[2]) // 2 - 25,
         y0 + int(round(face_h * 0.91)),
@@ -1558,6 +1713,16 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
         layer.save(mouths_dir / f"{rest_mouth_layer_key(state)}.png")
 
     eye_bboxes = ((650, 1005, 810, 1180), (1020, 1040, 1135, 1190))
+    eye_centers = [
+        [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2]
+        for box in eye_bboxes
+    ]
+    eye_radius = int(
+        round(
+            sum(min(box[2] - box[0], box[3] - box[1]) / 2 for box in eye_bboxes)
+            / len(eye_bboxes)
+        )
+    )
     # Optics are already finished in the artist head. Open is transparent;
     # the other states add graphite upper lids or closed seams.
     transparent = Image.new("RGBA", head.size, (0, 0, 0, 0))
@@ -1586,11 +1751,21 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
             "asset_profile": "gemini_anime_cel_v2",
             "asset_revision": ARTIST_ASSET_REVISION,
             "canvas_size": list(head.size),
+            "mouth_style": "ghibli_mecha",
+            "palette": {
+                "ink_outline": "#152026",
+                "accent_color": "#00F0FF",
+                "casing_color": "#5A858D",
+                "cavity_interior": "#0E171C",
+                "teeth_color": "#E8ECEE",
+            },
             "anchors": {
                 "head_pivot": [head.size[0] // 2, int(round(head.size[1] * 0.40))],
                 "neck_pivot": list(neck_pivot),
-                "eyes": [prior_mouth_anchor[0], y0 + int(round(face_h * 0.48))],
                 "mouth": list(mouth_anchor),
+                "left_eye": eye_centers[0],
+                "right_eye": eye_centers[1],
+                "eye_radius": eye_radius,
             },
             "calibration": {
                 "facial_plate_bbox": list(plate_bbox),

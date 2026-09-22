@@ -122,6 +122,7 @@ class AudioAnalyzer:
         active_speaker = active_speaker_lookup(turns, self.fps, n_frames)
         speaking_speaker = speaking_speaker_lookup(turns, self.fps, n_frames)
         emotion = emotion_lookup(turns, self.fps, n_frames)
+        camera_tight = camera_tight_lookup(turns, self.fps, n_frames)
         speakers = sorted({t.speaker for t in turns}) or ["speaker"]
 
         mouth_state: dict[str, list[int]] = {sp: [0] * n_frames for sp in speakers}
@@ -149,6 +150,7 @@ class AudioAnalyzer:
             eye_state=eye_state,
             viseme=viseme,
             emotion=emotion,
+            camera_tight=camera_tight,
         )
 
     # -- Phonetic mouth track -------------------------------------------- #
@@ -318,10 +320,28 @@ def emotion_lookup(turns: list[DialogueTurn], fps: int, n_frames: int) -> list[s
     return out
 
 
+def camera_tight_lookup(
+    turns: list[DialogueTurn],
+    fps: int,
+    n_frames: int,
+) -> list[bool]:
+    """Frame-indexed explicit camera direction from the dialogue ledger."""
+    out = [False] * n_frames
+    for turn in turns:
+        if not turn.camera_tight:
+            continue
+        start = max(0, int(round(turn.start_time * fps)))
+        end = min(n_frames, int(round(turn.end_time * fps)))
+        if end > start:
+            out[start:end] = [True] * (end - start)
+    return out
+
+
 __all__ = [
     "AudioAnalyzer",
     "active_speaker_lookup",
     "breathing_offset",
+    "camera_tight_lookup",
     "emotion_lookup",
     "load_mono_waveform",
     "speaking_speaker_lookup",

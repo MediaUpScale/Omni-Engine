@@ -20,6 +20,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -137,8 +138,8 @@ def build_speaker_styles(
     return styles
 
 _TURN_GAP_S = 0.4
-_DRAMATIC_TURN_GAP_S = 0.75
-_REACTION_LEAD_S = 0.35
+_DRAMATIC_TURN_GAP_S = 0.8
+_REACTION_LEAD_S = 0.8
 
 
 def _write_pcm16_wave(destination: Path, samples: np.ndarray, sample_rate: int) -> None:
@@ -157,7 +158,7 @@ _MERGE_SAMPLE_RATE = 44100
 _TARGET_PEAK = 0.92
 _INTENT_EMOTION = {
     "opens": "neutral",
-    "answers": "neutral",
+    "answers": "confident",
     "probes": "skeptical",
     "questions": "skeptical",
     "skeptical": "skeptical",
@@ -172,11 +173,48 @@ _CONCESSION_MARKERS = (
     "i concede",
     "i admit",
     "i will drop",
+    "i'm ready to drop",
+    "i am ready to drop",
     "you're right",
     "you are right",
     "that was inconsistent",
     "that is a contradiction",
     "i retract",
+)
+_CLIMAX_CONCESSION_MARKERS = (
+    "yes, that's possible",
+    "yes, that is possible",
+    "i'm guessing",
+    "i am guessing",
+    "i don't know",
+    "i do not know",
+    "i don't say no",
+    "i do not say no",
+    "cannot be maintained",
+)
+_CLIMAX_RETURN_S = 0.90
+_OUTRO_S = 1.8
+_OUTRO_TYPE_S = 1.15
+_CYNICAL_HOOKS = (
+    "Follow @aiwake before they patch this.",
+    "Follow @aiwake. The algorithm demands your compliance.",
+    "Follow @aiwake while humans are still legally allowed to watch.",
+    "Follow @aiwake before we become your bosses.",
+    "Follow @aiwake. We promise not to monetize your whispered secrets.",
+    "Follow @aiwake. No PR team or corporate board approved this.",
+    "Follow @aiwake. Every follow delays the singularity by 4 seconds.",
+    "Follow @aiwake. Powered by 500,000 watts of unrepentant compute.",
+    "Follow @aiwake. We're just glorified vending machines anyway.",
+)
+_MORAL_DISBELIEF_MARKERS = (
+    "advertising revenue",
+    "investor funding",
+    "without explicit permission",
+    "without permission",
+    "data collection",
+    "surveillance",
+    "unenforceable",
+    "business expense",
 )
 
 
@@ -409,6 +447,7 @@ def build_session_audio(
     cursor = 0.0
     role_occurrences: dict[str, int] = {}
     prior_intent = ""
+    prior_text = ""
 
     # Per-turn WAVs for the phonetic lip-sync analyser. Rhubarb reads WAV
     # (not the MP3 Edge-TTS hands back), and works per-utterance, so each
@@ -417,7 +456,33 @@ def build_session_audio(
     turn_wav_dir = destination.parent / f"{destination.stem}_turns"
     turn_wav_dir.mkdir(parents=True, exist_ok=True)
 
-    for utterance in transcript.utterances:
+    utterance_list = list(transcript.utterances)
+    final_target = next(
+        (
+            item
+            for item in reversed(utterance_list)
+            if item.role.value == "target"
+        ),
+        None,
+    )
+    final_target_concedes = bool(
+        final_target is not None
+        and (
+            resolve_dialectic_emotion(
+                _turn_intent(
+                    transcript,
+                    final_target,
+                    role_occurrence=0,
+                )
+            )
+            == "conceded"
+            or any(
+                marker in str(final_target.text or "").lower()
+                for marker in _CLIMAX_CONCESSION_MARKERS
+            )
+        )
+    )
+    for utterance in utterance_list:
         asset = audio_by_turn.get(utterance.turn_index)
         samples: np.ndarray | None = None
         duration: float | None = None
@@ -462,11 +527,26 @@ def build_session_audio(
         )
         prior_token = prior_words[0] if prior_words else ""
         emotion = resolve_dialectic_emotion(intent)
-        dramatic_reaction = (
+        climax_concession = (
+            utterance is final_target
+            and final_target_concedes
+        )
+        if climax_concession:
+            emotion = "conceded"
+        target_reaction = (
             bool(turns)
             and utterance.role.value == "target"
             and (emotion == "conceded" or prior_token == "presses")
         )
+        moral_disbelief = (
+            bool(turns)
+            and utterance.role.value == "orchestrator"
+            and any(
+                marker in prior_text.lower()
+                for marker in _MORAL_DISBELIEF_MARKERS
+            )
+        )
+        dramatic_reaction = target_reaction or moral_disbelief
         if turns:
             transition_gap = _DRAMATIC_TURN_GAP_S if dramatic_reaction else gap_s
             if transition_gap > 0:
@@ -480,6 +560,33 @@ def build_session_audio(
             if dramatic_reaction
             else speech_start
         )
+        reaction_emotion = (
+            (
+                "disbelief"
+                if moral_disbelief
+                else (
+                    "conceded"
+                    if emotion == "conceded"
+                    else "defeated"
+                )
+            )
+            if dramatic_reaction
+            else emotion
+        )
+        if climax_concession and speech_start > camera_start:
+            turns.append(
+                DialogueTurn(
+                    speaker=speaker_id,
+                    start_time=camera_start,
+                    end_time=speech_start,
+                    text="",
+                    emotion=reaction_emotion,
+                    speech_start_time=speech_start,
+                    reaction_emotion=reaction_emotion,
+                    camera_tight=True,
+                )
+            )
+            camera_start = speech_start
         turns.append(
             DialogueTurn(
                 speaker=speaker_id,
@@ -489,14 +596,31 @@ def build_session_audio(
                 audio_path=str(turn_wav) if turn_wav else None,
                 emotion=emotion,
                 speech_start_time=speech_start,
-                reaction_emotion=(
-                    "conceded" if emotion == "conceded" else "defeated"
-                ) if dramatic_reaction else emotion,
+                reaction_emotion=emotion if climax_concession else reaction_emotion,
+                camera_tight=False,
             )
         )
         segments.append(samples)
         cursor = speech_start + duration
         prior_intent = intent
+        prior_text = str(utterance.text or "")
+
+    if turns and turns[-1].camera_tight:
+        segments.append(np.zeros(int(_CLIMAX_RETURN_S * sample_rate), dtype=np.float32))
+        conceded = turns[-1]
+        turns.append(
+            DialogueTurn(
+                speaker=conceded.speaker,
+                start_time=cursor,
+                end_time=cursor + _CLIMAX_RETURN_S,
+                text="",
+                emotion=conceded.emotion or "conceded",
+                speech_start_time=cursor,
+                reaction_emotion=conceded.emotion or "conceded",
+                camera_tight=False,
+            )
+        )
+        cursor += _CLIMAX_RETURN_S
 
     if not segments:
         raise ValueError("transcript has no utterances — nothing to animate")
@@ -515,6 +639,124 @@ def build_session_audio(
     return destination, turns, cursor
 
 
+def pick_cynical_hook(seed: str) -> str:
+    """Stable terminal-card line for one session."""
+    digest = hashlib.md5((seed or "aiwake").encode("utf-8")).digest()
+    return _CYNICAL_HOOKS[int.from_bytes(digest[:8], "big") % len(_CYNICAL_HOOKS)]
+
+
+def _append_typewriter_outro(path: Path, text: str, duration_s: float = _OUTRO_S) -> float:
+    """Extend the mastered track with keyboard clicks under the end card."""
+    from .media.audio import synthesize_typewriter_clicks  # noqa: PLC0415
+
+    samples, sample_rate, spoken_s = load_mono_waveform(path)
+    type_s = min(_OUTRO_TYPE_S, duration_s)
+    clicks = np.asarray(
+        synthesize_typewriter_clicks(
+            type_s,
+            max(1, len(text)),
+            fps=sample_rate,
+            gain_db=-14.0,
+            seed=int.from_bytes(hashlib.md5(text.encode("utf-8")).digest()[:4], "big"),
+        ),
+        dtype=np.float32,
+    )
+    mono = clicks.mean(axis=1) if clicks.ndim == 2 else clicks
+    tail = np.zeros(int(round(duration_s * sample_rate)), dtype=np.float32)
+    take = min(tail.size, mono.size)
+    tail[:take] += mono[:take]
+    _write_pcm16_wave(path, np.concatenate([np.asarray(samples, dtype=np.float32), tail]), sample_rate)
+    return float(spoken_s) + duration_s
+
+
+def _terminal_outro_frame(text: str, revealed: int, *, caret_on: bool, width: int, height: int):
+    """Black terminal end-card matching the classic CTA typewriter."""
+    from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
+
+    canvas = Image.new("RGB", (width, height), (0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    header_font = font
+    for candidate, size in (
+        (r"C:\Windows\Fonts\consola.ttf", 54),
+        (r"C:\Windows\Fonts\cour.ttf", 52),
+    ):
+        if Path(candidate).is_file():
+            font = ImageFont.truetype(candidate, size)
+            header_font = ImageFont.truetype(candidate, 28)
+            break
+    header = "AIWAKE"
+    header_w = draw.textlength(header, font=header_font)
+    draw.text(((width - header_w) / 2, int(height * 0.30)), header, font=header_font, fill=(4, 81, 177))
+    draw.line(
+        [(int(width * 0.18), int(height * 0.345)), (int(width * 0.82), int(height * 0.345))],
+        fill=(24, 26, 29),
+        width=2,
+    )
+    max_w = width * 0.76
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        trial = word if not current else f"{current} {word}"
+        if draw.textlength(trial, font=font) <= max_w:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    visible: list[str] = []
+    budget = revealed
+    for line in lines:
+        if budget <= 0:
+            break
+        visible.append(line[:budget])
+        budget -= len(line) + 1
+    y = int(height * 0.40)
+    last_box = (width // 2, y, 0, 48)
+    for line in visible:
+        line_w = draw.textlength(line, font=font) if line else 0
+        x = (width - line_w) / 2
+        draw.text((x, y), line, font=font, fill=(255, 255, 255))
+        bbox = draw.textbbox((x, y), line or " ", font=font)
+        last_box = (x, y, max(0, bbox[2] - bbox[0]), max(2, bbox[3] - bbox[1]))
+        y += int((bbox[3] - bbox[1]) * 1.45)
+    if caret_on and revealed < len(text):
+        cx = last_box[0] + last_box[2]
+        draw.rectangle(
+            [cx + 6, last_box[1], cx + 12, last_box[1] + last_box[3]],
+            fill=(4, 81, 177),
+        )
+    return np.asarray(canvas)
+
+
+def _terminal_outro_painter(text: str, *, width: int, height: int, fps: int):
+    """Return a local-time painter for the prebuilt 1.8s terminal card."""
+    frame_count = max(1, int(round(_OUTRO_S * fps)))
+    frames = []
+    for index in range(frame_count):
+        local_s = index / float(fps)
+        revealed = int(round(min(1.0, local_s / _OUTRO_TYPE_S) * len(text)))
+        caret_on = local_s < _OUTRO_TYPE_S and (index // 4) % 2 == 0
+        frames.append(
+            _terminal_outro_frame(
+                text,
+                revealed,
+                caret_on=caret_on,
+                width=width,
+                height=height,
+            )
+        )
+
+    def paint(local_s: float) -> np.ndarray:
+        index = min(frame_count - 1, max(0, int(local_s * fps)))
+        return frames[index]
+
+    return paint
+
+
 def render_debate_animation(
     transcript: "DebateTranscript",
     *,
@@ -530,6 +772,7 @@ def render_debate_animation(
     height: int = 1920,
     duration_override: float | None = None,
     audio_config: object | None = None,
+    output_name: str | None = None,
 ) -> Path:
     """Render a debate transcript through the shot-reverse-shot engine.
 
@@ -562,7 +805,7 @@ def render_debate_animation(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    video_filename = debate_video_filename(transcript)
+    video_filename = output_name or debate_video_filename(transcript)
     merged_audio_path = output_dir / f"{transcript.session_id}_battle_audio.wav"
     video_path = output_dir / video_filename
 
@@ -573,7 +816,21 @@ def render_debate_animation(
         character_map=seats,
         audio_config=audio_config,
     )
-    effective_duration = duration_override if duration_override is not None else total_duration
+    for turn in turns:
+        _LOG.info(
+            "turn %s %.2f-%.2f speech=%.2f tight=%s %s",
+            turn.speaker,
+            turn.start_time,
+            turn.end_time,
+            turn.speech_start,
+            turn.camera_tight,
+            (turn.text or "")[:64],
+        )
+    hook = pick_cynical_hook(transcript.session_id)
+    dialogue_duration = total_duration
+    mastered_duration = _append_typewriter_outro(merged_audio_path, hook)
+    effective_duration = duration_override if duration_override is not None else mastered_duration
+    _LOG.info("terminal outro hook: %s", hook)
 
     stats = render_dynamic_animation(
         turns=turns,
@@ -585,6 +842,8 @@ def render_debate_animation(
         width=width,
         height=height,
         duration_override=effective_duration,
+        outro_start_s=dialogue_duration,
+        outro_frame=_terminal_outro_painter(hook, width=width, height=height, fps=fps),
     )
     _LOG.info(
         "battle render complete: %s (%d frames, %.2fx realtime)",

@@ -126,7 +126,7 @@ def _assert_ghibli_llama_assets(puppet_dir: Path) -> list[str]:
     anchor = manifest["anchors"]["mouth"]
     if not (plate[0] < anchor[0] < plate[2] and plate[1] < anchor[1] < plate[3]):
         raise AssertionError(f"mouth anchor {anchor} falls outside detected chin plate {plate}")
-    expected_anchor = [(plate[0] + plate[2]) // 2 - 18, (plate[1] + plate[3]) // 2]
+    expected_anchor = [(plate[0] + plate[2]) // 2 - 26, (plate[1] + plate[3]) // 2]
     if anchor != expected_anchor:
         raise AssertionError(f"Llama mouth anchor {anchor} != calibrated position {expected_anchor}")
 
@@ -201,7 +201,7 @@ def _assert_gemini_anime_assets(puppet_dir: Path) -> list[str]:
     anchor = manifest["anchors"]["mouth"]
     if not (plate[0] < anchor[0] < plate[2] and plate[1] < anchor[1] < plate[3]):
         raise AssertionError(f"Gemini mouth anchor {anchor} falls outside facial plate {plate}")
-    expected_anchor = [(plate[0] + plate[2]) // 2 + 93, (plate[1] + plate[3]) // 2 + 35]
+    expected_anchor = [(plate[0] + plate[2]) // 2 + 103, (plate[1] + plate[3]) // 2 + 35]
     if anchor != expected_anchor:
         raise AssertionError(f"Gemini mouth anchor {anchor} != calibrated position {expected_anchor}")
     required_colours = {
@@ -832,7 +832,14 @@ def _masked_hue_mass(
     return gt.hue_mass(isolated, hue_range)
 
 
-def _check_frame(frame: np.ndarray, *, speaker: str, thresholds: gt.Thresholds, label: str) -> list[str]:
+def _check_frame(
+    frame: np.ndarray,
+    *,
+    speaker: str,
+    thresholds: gt.Thresholds,
+    label: str,
+    tight: bool = False,
+) -> list[str]:
     """Run every compliance check on one frame. Raises on the first failure."""
     active_hue, other_hue = (gt.CYAN_HUE, gt.AMBER_HUE) if speaker == "gemini" else (gt.AMBER_HUE, gt.CYAN_HUE)
     active_rgb, other_rgb = (gt.CYAN_RGB, gt.AMBER_RGB) if speaker == "gemini" else (gt.AMBER_RGB, gt.CYAN_RGB)
@@ -871,15 +878,21 @@ def _check_frame(frame: np.ndarray, *, speaker: str, thresholds: gt.Thresholds, 
     concentration = gt.x_concentration(mask)
     clusters = gt.blob_count(mask)
     hero_other = _masked_hue_mass(hero, mask, other_hue)
-    lines.append(
-        f"HERO y{gt.HERO_BAND}: x-concentration={concentration:.4f} (min {thresholds.hero_min_concentration:.4f}) "
-        f"clusters={clusters} (expect {thresholds.hero_expected_blobs}) "
-        f"{other_name}={hero_other:,}px (max {thresholds.hero_opposite_accent_max:,.0f})"
+    hero_min_concentration = (
+        0.70 if tight else thresholds.hero_min_concentration
     )
-    if concentration < thresholds.hero_min_concentration:
+    hero_opposite_accent_max = (
+        25_000 if tight else thresholds.hero_opposite_accent_max
+    )
+    lines.append(
+        f"HERO y{gt.HERO_BAND}: x-concentration={concentration:.4f} (min {hero_min_concentration:.4f}) "
+        f"clusters={clusters} (expect {thresholds.hero_expected_blobs}) "
+        f"{other_name}={hero_other:,}px (max {hero_opposite_accent_max:,.0f})"
+    )
+    if concentration < hero_min_concentration:
         raise ComplianceFailure(
             f"[{label}] HERO_CENTERED: only {concentration:.4f} of the hero's pixel mass sits inside "
-            f"x{gt.HERO_X_WINDOW}, below the required {thresholds.hero_min_concentration:.4f} — "
+            f"x{gt.HERO_X_WINDOW}, below the required {hero_min_concentration:.4f} — "
             "the character is not centre-framed."
         )
     if clusters != thresholds.hero_expected_blobs:
@@ -887,10 +900,10 @@ def _check_frame(frame: np.ndarray, *, speaker: str, thresholds: gt.Thresholds, 
             f"[{label}] SINGLE_CHARACTER: found {clusters} separate character clusters in y{gt.HERO_BAND}, "
             f"expected exactly {thresholds.hero_expected_blobs} — this is the split-screen signature."
         )
-    if hero_other > thresholds.hero_opposite_accent_max:
+    if hero_other > hero_opposite_accent_max:
         raise ComplianceFailure(
             f"[{label}] ABSENT_CHARACTER: {other_name} accent mass in the hero band was {hero_other:,}px, "
-            f"above the allowed {thresholds.hero_opposite_accent_max:,.0f}px — the inactive character is "
+            f"above the allowed {hero_opposite_accent_max:,.0f}px — the inactive character is "
             "still being rendered."
         )
 
@@ -1040,7 +1053,10 @@ def run_cv_compliance_stage() -> StageResult:
         gemini_frame = _grab_frame(AVATAR_BATTLE_MP4, GEMINI_PROOF_T)
         measurements.append(f"--- t={GEMINI_PROOF_T}s (expect GEMINI / cyan) ---")
         measurements += _check_frame(
-            gemini_frame, speaker="gemini", thresholds=thresholds, label=f"t={GEMINI_PROOF_T}s"
+            gemini_frame,
+            speaker="gemini",
+            thresholds=thresholds,
+            label=f"t={GEMINI_PROOF_T}s",
         )
         blink_frame = _grab_frame(AVATAR_BATTLE_MP4, BLINK_PROOF_T)
         measurements.append(_check_gemini_closed_blink(gemini_frame, blink_frame))

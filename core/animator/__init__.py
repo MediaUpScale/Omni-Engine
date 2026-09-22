@@ -66,6 +66,8 @@ def render_dynamic_animation(
     seed: int = 0,
     burn_subtitles: bool = True,
     use_rhubarb: bool = True,
+    outro_start_s: float | None = None,
+    outro_frame=None,
 ) -> RenderStats:
     """Analyze audio, direct the shot-reverse-shot, render to mp4.
 
@@ -93,7 +95,12 @@ def render_dynamic_animation(
     )
 
     compositor = ShotReverseShotCompositor(
-        rigs=rigs, styles=style_map, width=width, height=height
+        rigs=rigs,
+        styles=style_map,
+        width=width,
+        height=height,
+        outro_start_s=outro_start_s,
+        outro_frame=outro_frame,
     )
 
     output_path = Path(output_path)

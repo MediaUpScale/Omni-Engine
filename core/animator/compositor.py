@@ -30,7 +30,11 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from .puppet import PuppetRig, emotion_brow_state
+from .puppet import (
+    PuppetRig,
+    emotion_brow_state,
+    emotion_rest_mouth_state,
+)
 from .types import REST_VISEME, AnalyzedAudio, SpeakerStyle
 
 _LOG = logging.getLogger("animator.compositor")
@@ -48,6 +52,12 @@ HERO_ELEVATION_PX = 0
 #: Legacy compatibility constant. Artist cels already carry this approximate
 #: three-quarter yaw; the compositor no longer applies a second warp.
 HERO_YAW_DEG = 25.0
+CAMERA_NORMAL = "normal"
+CAMERA_TIGHT = "tight"
+CAMERA_NORMAL_ZOOM = 0.95
+CAMERA_TIGHT_ZOOM = 1.35
+GEMINI_LEAD_X = 420
+LLAMA_LEAD_X = 660
 
 # -- Idle physics ----------------------------------------------------------- #
 _IDLE_GLOW = 0.10
@@ -68,6 +78,8 @@ class ShotReverseShotCompositor:
         styles: dict[str, SpeakerStyle],
         width: int = 1080,
         height: int = 1920,
+        outro_start_s: float | None = None,
+        outro_frame=None,
     ) -> None:
         if not rigs:
             raise ValueError("shot-reverse-shot needs at least one character rig")
@@ -79,6 +91,8 @@ class ShotReverseShotCompositor:
         self.hud_band = (0, int(round(height * HUD_BAND_FRAC)))
         self.hero_band = (self.hud_band[1], int(round(height * (HUD_BAND_FRAC + HERO_BAND_FRAC))))
         self.subtitle_band = (self.hero_band[1], height)
+        self._outro_start_s = outro_start_s
+        self._outro_frame = outro_frame
 
         # Built once as PIL images (gradients, text, glows are expensive but
         # static) then frozen into numpy — the per-frame loop is pure
@@ -99,14 +113,18 @@ class ShotReverseShotCompositor:
                 styles.get(speaker_id),
                 target_width=self.width,
                 target_height=self.height,
+                zoom=CAMERA_NORMAL_ZOOM,
             )
             for speaker_id, rig in rigs.items()
         }
         self._speaker_base: dict[str, dict[int, np.ndarray]] = {}
         for speaker_id, camera in self._camera.items():
             breathing_states: dict[int, np.ndarray] = {}
+            background = self._backgrounds.get(
+                speaker_id, self._background
+            )
             for y_offset in range(-3, 4):
-                frame = self._backgrounds.get(speaker_id, self._background).copy()
+                frame = background.copy()
                 _alpha_blend_paste(
                     frame,
                     camera.static_body,
@@ -200,6 +218,20 @@ class ShotReverseShotCompositor:
         vignette = vignette.filter(ImageFilter.GaussianBlur(120))
         return Image.composite(img, Image.new("RGB", (w, h), (0, 0, 0)), vignette)
 
+    def _tight_view(self, frame: np.ndarray, anchor_x: int) -> np.ndarray:
+        """Apply the discrete 1.35x crop centered on the docked face."""
+        crop_w = int(round(self.width / CAMERA_TIGHT_ZOOM))
+        crop_h = int(round(self.height / CAMERA_TIGHT_ZOOM))
+        left = int(np.clip(anchor_x - crop_w // 2, 0, self.width - crop_w))
+        focal_y = int(round(self.height * 0.36))
+        top = int(np.clip(focal_y - crop_h * 0.34, 0, self.height - crop_h))
+        crop = frame[top : top + crop_h, left : left + crop_w]
+        return cv2.resize(
+            crop,
+            (self.width, self.height),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
     # -- Frame loop ------------------------------------------------------- #
     def iter_frames(self, analyzed: AnalyzedAudio) -> Iterator[np.ndarray]:
         """Yield RGB24 frames (H, W, 3) uint8, ready for the ffmpeg pipe."""
@@ -224,6 +256,13 @@ class ShotReverseShotCompositor:
         current = next((s for s in camera_speakers if s in self.rigs), None) or next(iter(self.rigs))
         for index in range(analyzed.n_frames):
             t = analyzed.frame_time(index)
+            if (
+                self._outro_start_s is not None
+                and self._outro_frame is not None
+                and t >= self._outro_start_s
+            ):
+                yield self._outro_frame(t - self._outro_start_s)
+                continue
             camera_speaker = (
                 camera_speakers[index] if index < len(camera_speakers) else None
             )
@@ -237,6 +276,12 @@ class ShotReverseShotCompositor:
             is_speaking = speaking == current
 
             active_rms = float(_sequence_at(analyzed.rms, index, 0.0))
+            emotion = _sequence_at(analyzed.emotion, index, "neutral")
+            camera_mode = dramatic_camera_mode(
+                camera_tight=bool(
+                    _sequence_at(analyzed.camera_tight, index, False)
+                )
+            )
             camera = self._camera[current]
             breathing_y = camera.breathing_offset(t)
             frame = self._speaker_base[current][breathing_y].copy()
@@ -253,9 +298,11 @@ class ShotReverseShotCompositor:
                 emphasis_threshold=emphasis_thresholds.get(current, 1.0),
                 brow_emphasis_threshold=brow_thresholds.get(current, 1.0),
                 is_speaking=is_speaking,
-                emotion=_sequence_at(analyzed.emotion, index, "neutral"),
+                emotion=emotion,
                 body_offset_y=breathing_y,
             )
+            if camera_mode == CAMERA_TIGHT:
+                frame = self._tight_view(frame, camera.lead_anchor_x)
 
             yield frame
 
@@ -270,6 +317,7 @@ class _HeroCamera:
         *,
         target_width: int = HERO_CONTENT_WIDTH,
         target_height: int = 1920,
+        zoom: float = 1.0,
     ) -> None:
         self.rig = rig
         self.facing = (style.facing if style else "right").lower()
@@ -281,7 +329,10 @@ class _HeroCamera:
         self._emotion = "neutral"
         self._previous_emotion = "neutral"
         self._emotion_transition_frame = 3
-        self._overlay_cache: dict[tuple, tuple[np.ndarray, int, int]] = {}
+        self._overlay_cache: dict[
+            tuple,
+            tuple[np.ndarray, np.ndarray, int, int],
+        ] = {}
         self.last_brow_state = "neutral"
 
         # Head and body were authored on one matching vertical canvas. Keep
@@ -292,7 +343,10 @@ class _HeroCamera:
 
         # Exact-size art is a true passthrough. Other artist resolutions are
         # uniformly contained once as a complete canvas.
-        scale = min(target_width / float(crop_w), target_height / float(crop_h))
+        scale = (
+            min(target_width / float(crop_w), target_height / float(crop_h))
+            * float(np.clip(zoom, 0.80, 1.60))
+        )
         self.out_w = int(round(crop_w * scale))
         self.out_h = int(round(crop_h * scale))
         scale_x = self.out_w / float(crop_w)
@@ -304,7 +358,8 @@ class _HeroCamera:
             )
         self.scale_x = scale_x
         self.scale_y = scale_y
-        self.offset_x = (target_width - self.out_w) // 2
+        self.lead_anchor_x = lead_anchor_x(self.facing, target_width)
+        self.offset_x = int(round(self.lead_anchor_x - (self.out_w / 2.0)))
         self.offset_y = target_height - self.out_h
         self.static_body = cv2.resize(
             self.rig.body_rgba,
@@ -321,7 +376,7 @@ class _HeroCamera:
         key: tuple,
         overlay: np.ndarray,
         bbox: tuple[int, int, int, int],
-    ) -> tuple[np.ndarray, int, int]:
+    ) -> tuple[np.ndarray, np.ndarray, int, int]:
         cached = self._overlay_cache.get(key)
         if cached is not None:
             return cached
@@ -335,8 +390,16 @@ class _HeroCamera:
             (max(1, out_x1 - out_x0), max(1, out_y1 - out_y0)),
             interpolation=cv2.INTER_AREA,
         )
+        alpha = resized[..., 3]
+        alpha_3ch = cv2.merge([alpha, alpha, alpha])
+        premultiplied = cv2.multiply(
+            resized[..., :3],
+            alpha_3ch,
+            scale=1.0 / 255.0,
+        )
         result = (
-            resized,
+            premultiplied,
+            cv2.bitwise_not(alpha_3ch),
             self.offset_x + out_x0,
             self.offset_y + out_y0,
         )
@@ -373,22 +436,32 @@ class _HeroCamera:
             eye_state=eye_state,
             brow_state=brow_state,
             brow_emphasized=brow_emphasized,
+            rest_mouth_state=emotion_rest_mouth_state(self._emotion),
             angle_deg=head_angle,
         )
         angle_key = round(float(head_angle) / 0.3) * 0.3
-        scaled, x, y = self._scaled_overlay(
+        rest_state = emotion_rest_mouth_state(self._emotion)
+        premultiplied, inv_alpha, x, y = self._scaled_overlay(
             (
                 "head",
                 (viseme or REST_VISEME).upper()[:1],
                 eye_state,
                 brow_state,
-                brow_emphasized,
+                rest_state
+                if (viseme or REST_VISEME).upper()[:1] == REST_VISEME
+                else "",
                 angle_key,
             ),
             head,
             bbox,
         )
-        _alpha_blend_paste(frame, scaled, x, y + int(body_offset_y))
+        _alpha_blend_paste_precomputed(
+            frame,
+            premultiplied,
+            inv_alpha,
+            x,
+            y + int(body_offset_y),
+        )
 
     def render(
         self,
@@ -475,6 +548,20 @@ class _HeroCamera:
         return self._head_angle
 
 
+def lead_anchor_x(facing: str, width: int = 1080) -> int:
+    """Dock a right-facing hero left, and a left-facing hero right."""
+    if (facing or "").lower() == "right":
+        return GEMINI_LEAD_X
+    if (facing or "").lower() == "left":
+        return LLAMA_LEAD_X
+    return width // 2
+
+
+def dramatic_camera_mode(*, camera_tight: bool) -> str:
+    """Choose one of two discrete precomputed viewports."""
+    return CAMERA_TIGHT if camera_tight else CAMERA_NORMAL
+
+
 def emphasis_head_target(rms: float, threshold: float, *, direction: float) -> float:
     """One bounded emphasis impulse; ordinary speech produces no rotation."""
     if rms <= threshold:
@@ -518,11 +605,48 @@ def _alpha_blend_paste(dest: np.ndarray, src_rgba: np.ndarray, x: int, y: int) -
     dest[dst_y0:dst_y1, dst_x0:dst_x1] = cv2.add(fg, bg)
 
 
+def _alpha_blend_paste_precomputed(
+    dest: np.ndarray,
+    premultiplied_rgb: np.ndarray,
+    inv_alpha_3ch: np.ndarray,
+    x: int,
+    y: int,
+) -> None:
+    """Blend a cached premultiplied sprite with one multiply and one add."""
+    dh, dw = dest.shape[:2]
+    sh, sw = premultiplied_rgb.shape[:2]
+    dst_x0, dst_y0 = max(0, x), max(0, y)
+    dst_x1, dst_y1 = min(dw, x + sw), min(dh, y + sh)
+    if dst_x1 <= dst_x0 or dst_y1 <= dst_y0:
+        return
+    src_x0, src_y0 = dst_x0 - x, dst_y0 - y
+    src_x1 = src_x0 + (dst_x1 - dst_x0)
+    src_y1 = src_y0 + (dst_y1 - dst_y0)
+    dst_region = dest[dst_y0:dst_y1, dst_x0:dst_x1]
+    bg = cv2.multiply(
+        dst_region,
+        inv_alpha_3ch[src_y0:src_y1, src_x0:src_x1],
+        scale=1.0 / 255.0,
+    )
+    dest[dst_y0:dst_y1, dst_x0:dst_x1] = cv2.add(
+        premultiplied_rgb[src_y0:src_y1, src_x0:src_x1],
+        bg,
+    )
+
+
 __all__ = [
+    "CAMERA_NORMAL",
+    "CAMERA_NORMAL_ZOOM",
+    "CAMERA_TIGHT",
+    "CAMERA_TIGHT_ZOOM",
+    "GEMINI_LEAD_X",
+    "LLAMA_LEAD_X",
+    "lead_anchor_x",
     "HERO_CONTENT_WIDTH",
     "HERO_ELEVATION_PX",
     "HERO_YAW_DEG",
     "HUD_BAND_FRAC",
     "ShotReverseShotCompositor",
+    "dramatic_camera_mode",
     "emphasis_head_target",
 ]

@@ -47,6 +47,7 @@ class DialogueTurn:
     emotion: str = "neutral"
     speech_start_time: float | None = None
     reaction_emotion: str = "neutral"
+    camera_tight: bool = False
 
     @property
     def duration(self) -> float:
@@ -103,9 +104,19 @@ class PuppetAnchors:
     """Pixel anchors on a puppet's canvas, in the skin's own coordinate space."""
 
     mouth: Vec2
-    eyes: Vec2
+    left_eye: Vec2
+    right_eye: Vec2
+    eye_radius: int
     head_pivot: Vec2
     neck_pivot: Vec2
+
+    @property
+    def eyes(self) -> Vec2:
+        """Compatibility midpoint for pre-Puppet-Factory callers."""
+        return (
+            (self.left_eye[0] + self.right_eye[0]) // 2,
+            (self.left_eye[1] + self.right_eye[1]) // 2,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +151,7 @@ class AnalyzedAudio:
     eye_state: dict[str, Sequence[int]] = field(default_factory=dict)
     viseme: dict[str, Sequence[str]] = field(default_factory=dict)
     emotion: Sequence[str] = field(default_factory=list)
+    camera_tight: Sequence[bool] = field(default_factory=list)
 
     def frame_time(self, index: int) -> float:
         return index / float(self.fps)
