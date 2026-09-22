@@ -14,7 +14,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[3]
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
 
@@ -22,7 +22,13 @@ from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env", override=False, encoding="utf-8-sig")
 
-from rebuild_ak_silent_reels import BATCH, CLIPS, _find_reel, _load_captions, _clean_script
+from channels_config.ancient_knowledge.tools.rebuild_silent_reels import (
+    BATCH,
+    CLIPS,
+    _clean_script,
+    _find_reel,
+    _load_captions,
+)
 from agents.posting.youtube_publisher import (
     build_youtube_client_for_page,
     get_next_publish_slot,

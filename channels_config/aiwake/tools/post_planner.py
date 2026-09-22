@@ -154,7 +154,7 @@ LINKEDIN_BULLET_EDIT = (
 LINKEDIN_BULLET_ARCH = (
     "• Architecture: GraphRAG context isolation + sub-10ms event bus telemetry."
 )
-LINKEDIN_CLOSING = "Full system architecture & telemetry ledger: diogolean.com/projects/aiwake"
+LINKEDIN_CLOSING = "Full system architecture and telemetry ledger stay inside the Aiwake engine."
 LINKEDIN_HASHTAGS: tuple[str, ...] = ("#MultiAgentSystems", "#LLM", "#SystemArchitecture")
 LINKEDIN_SYSTEM = LINKEDIN_THESIS
 LINKEDIN_PROOF = LINKEDIN_BULLET_EDIT
@@ -193,6 +193,10 @@ _QUOTE_HINTS = (
 )
 _DATE_IN_CAPTION_RE = re.compile(
     r"\b(?:20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/20\d{2}\s+\d{1,2}:\d{2})\b"
+)
+_CAPTION_URL_RE = re.compile(
+    r"https?://|\bwww\.|[a-z0-9-]+\.(?:com|net|org|io|ai)/",
+    re.IGNORECASE,
 )
 REELS_JSON_NAME = "post_planner_reels_tiktok.json"
 LINKEDIN_JSON_NAME = "post_planner_linkedin.json"
@@ -1006,6 +1010,8 @@ def verify_linkedin_caption(caption: str, *, label: str = "linkedin") -> list[st
         errors.append(f"{label}: missing engineering bullets")
     if LINKEDIN_CLOSING not in caption:
         errors.append(f"{label}: missing telemetry ledger")
+    if _CAPTION_URL_RE.search(caption):
+        errors.append(f"{label}: external URL in body")
     if SOCIAL_RENDER_NOTE in caption:
         errors.append(f"{label}: used social engine")
     if _DATE_IN_CAPTION_RE.search(caption_body_before_hashtags(caption)):
@@ -1146,13 +1152,17 @@ def scan_root_production_videos(
     *,
     min_bytes: int = _MIN_VIDEO_BYTES,
 ) -> list[Path]:
-    """MP4s sitting directly in ``{OUTPUT_PATH}/aiwake/``. No subfolders."""
+    """Production MP4s from the channel root and ``animation_clips``."""
     root = Path(outputs_dir)
     if not root.is_dir():
         return []
     found: list[Path] = []
-    for path in sorted(root.glob("*.mp4")):
+    candidates = list(root.glob("*.mp4"))
+    candidates.extend((root / "animation_clips").glob("aiwake_battle_*.mp4"))
+    for path in sorted(candidates):
         if not path.is_file():
+            continue
+        if "test_archive" in {part.lower() for part in path.parts}:
             continue
         skipped = excluded_video_folder(path)
         if skipped:
@@ -1192,6 +1202,8 @@ def match_library_row(
     stem = video.stem.lower()
     if stem.startswith("aiwake_debate_"):
         stem = stem[len("aiwake_debate_"):]
+    elif stem.startswith("aiwake_battle_"):
+        stem = stem[len("aiwake_battle_"):]
     return by_session.get(stem)
 
 
@@ -1410,8 +1422,7 @@ def compact_reels_export(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         {
             "session_id": str(item.get("session_id") or ""),
             "caption": str(item.get("caption") or item.get("post_planner_caption") or ""),
-            "media_url": planner_media_url(item),
-            "tags": prune_hashtags(item.get("tags") or item.get("hashtags") or []),
+            "b2_url": planner_media_url(item),
         }
         for item in entries
     ]

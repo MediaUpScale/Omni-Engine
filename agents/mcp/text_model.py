@@ -156,7 +156,7 @@ def _complete_gemini(
         make_gemini_client_with_fallback,
     )
     from agents.media.providers.model_router import CHEAP_TEXT_CHAIN, CHEAP_TEXT_PRIMARY
-    from google_guardrail import extract_usage_tokens
+    from core.google_guardrail import extract_usage_tokens
 
     api_key = getattr(app_config, "GEMINI_API_KEY", None)
     if not api_key:

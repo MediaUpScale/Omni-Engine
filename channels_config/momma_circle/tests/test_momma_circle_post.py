@@ -6,7 +6,7 @@ Quick connection & publish test for the Momma Circle Facebook Page.
 
 Usage
 -----
-    python tests/test_momma_circle_post.py
+    python channels_config/momma_circle/tests/test_momma_circle_post.py
 
 Options
 -------
@@ -18,12 +18,6 @@ The script loads credentials from .env automatically.
 """
 from __future__ import annotations
 
-from pathlib import Path as _ReorgPath
-import sys as _reorg_sys
-_REORG_ROOT = _ReorgPath(__file__).resolve().parents[1]
-if str(_REORG_ROOT) not in _reorg_sys.path:
-    _reorg_sys.path.insert(0, str(_REORG_ROOT))
-
 import argparse
 import os
 import sys
@@ -32,7 +26,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Ensure project root is on sys.path when run directly
 # ---------------------------------------------------------------------------
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

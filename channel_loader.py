@@ -76,7 +76,7 @@ def _extract_style_anchor_via_gemini_vision(image_paths: "list[Path]", page_id: 
         from PIL import Image
 
         import config as app_config
-        from google_guardrail import guarded_generate_content, make_guarded_gemini_client
+        from core.google_guardrail import guarded_generate_content, make_guarded_gemini_client
         api_key = getattr(app_config, "GEMINI_API_KEY", None)
         if not api_key:
             _LOG.warning(

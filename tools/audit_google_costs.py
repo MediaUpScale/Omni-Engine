@@ -8,9 +8,9 @@ aggregates by channel (anna_protocol vs ancient_knowledge), flags retries /
 
 Usage
 -----
-    python audit_google_costs.py
-    python audit_google_costs.py --peak-start "2026-09-05 21:00" --peak-end "2026-09-06 02:00"
-    python audit_google_costs.py --logs-dir "G:/.../outputs/logs"
+    python -m tools.audit_google_costs
+    python -m tools.audit_google_costs --peak-start "2026-09-05 21:00" --peak-end "2026-09-06 02:00"
+    python -m tools.audit_google_costs --logs-dir "G:/.../outputs/logs"
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
-# Local pricing (keep in sync with google_guardrail.py — no import required).
+# Local pricing (keep in sync with core/google_guardrail.py — no import required).
 FLASH_INPUT_USD_PER_1M = 0.075
 FLASH_OUTPUT_USD_PER_1M = 0.30
 IMAGE_FLASH_1K_USD = 0.005
@@ -459,7 +459,7 @@ def discover_roots(extra: list[Path] | None = None) -> list[Path]:
     extra = extra or []
     env_out = (os.getenv("OUTPUT_PATH") or os.getenv("OUTPUTS_DIR") or "").strip()
     if not env_out:
-        env_path = Path(__file__).resolve().parent / ".env"
+        env_path = Path(__file__).resolve().parents[1] / ".env"
         if env_path.is_file():
             for line in env_path.read_text(encoding="utf-8-sig").splitlines():
                 if line.strip().startswith("OUTPUT_PATH="):
@@ -480,7 +480,7 @@ def discover_roots(extra: list[Path] | None = None) -> list[Path]:
                 lib = child / "library"
                 if child.is_dir() and lib.is_dir():
                     roots.append(lib)
-    repo = Path(__file__).resolve().parent
+    repo = Path(__file__).resolve().parents[1]
     roots.extend(
         [
             repo / "outputs" / "logs",

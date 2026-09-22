@@ -14,6 +14,7 @@ side-effect policy.
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -105,6 +106,39 @@ class BulkPipelineResult:
 
 
 _BULK_SCRIPT_RETRIES = 3
+_PROTOTYPE_NAMES = {
+    "aiwake_full_battle_v2.mp4",
+}
+
+
+def archive_animation_prototypes(animation_dir: Path) -> list[Path]:
+    """Move test-era animation artifacts out of the production namespace."""
+    root = Path(animation_dir)
+    archive = root / "test_archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    moved: list[Path] = []
+    for item in tuple(root.iterdir()):
+        if item == archive:
+            continue
+        name = item.name.lower()
+        prototype = (
+            name in _PROTOTYPE_NAMES
+            or name.startswith(("test_avatar_battle", "proof_", "spoken_test_", "synthetic_test_"))
+            or "_test_render_battle" in name
+            or "_render." in name
+            or "_render_" in name
+        )
+        if not prototype:
+            continue
+        destination = archive / item.name
+        if destination.exists():
+            suffix = int(time.time())
+            destination = archive / f"{item.stem}_{suffix}{item.suffix}"
+        shutil.move(str(item), str(destination))
+        moved.append(destination)
+    if moved:
+        _LOG.info("archived %d prototype animation artifact(s) -> %s", len(moved), archive)
+    return moved
 
 
 def _transcript_script(result: PipelineResult) -> str:
@@ -125,6 +159,72 @@ def _script_conflicts(script: str, seen_scripts: Sequence[str], seen_fps: set[st
     return any(scripts_overlap(script, prior) for prior in seen_scripts)
 
 
+def _require_production_memory(topic: str | None) -> object:
+    from .tools.supermemory_bridge import HISTORY_CONTAINER, get_bridge
+
+    bridge = get_bridge()
+    if not bridge.is_active:
+        raise RuntimeError(
+            "production animation requires Supermemory at localhost:6767; "
+            "the self-healing startup hook could not make it ready"
+        )
+    _LOG.info(
+        "Supermemory production gate ready at %s (container_tag=%s)",
+        bridge.base_url,
+        HISTORY_CONTAINER,
+    )
+    if topic and bridge.check_topic_similarity(topic):
+        raise ValueError(f"Supermemory rejected repetitive production topic: {topic}")
+    return bridge
+
+
+def _persist_production_package(
+    *,
+    transcript: DebateTranscript,
+    video_path: Path,
+    media_dir: Path,
+) -> None:
+    from .settings import resolve_store_dir
+    from .tools.backfill_metadata import (
+        build_record,
+        load_transcript_file,
+        persist_record,
+        probe_duration_s,
+    )
+    from .tools.post_planner import run_planner
+    from .tools.supermemory_bridge import remember_approved_session
+    from modules.distribution_contract import content_library_path
+
+    transcript_dir = resolve_store_dir() / "transcripts"
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    transcript_path = transcript_dir / f"{transcript.session_id}.json"
+    transcript_path.write_text(transcript.model_dump_json(indent=2), encoding="utf-8")
+    doc = load_transcript_file(transcript_path)
+    if doc is None:
+        raise RuntimeError(f"could not reload production transcript {transcript_path}")
+    record = build_record(Path(video_path), doc)
+    persist_record(
+        record,
+        library_path=content_library_path("aiwake"),
+        duration_s=probe_duration_s(Path(video_path)),
+    )
+    utterances = list(transcript.utterances)
+    hook = utterances[0].text if utterances else ""
+    quote = utterances[-1].text if utterances else ""
+    remember_approved_session(transcript.session_id, transcript.topic, hook, quote)
+    planner_path, entries = run_planner(outputs_dir=media_dir)
+    if not any(str(item.get("session_id") or "") == transcript.session_id for item in entries):
+        raise RuntimeError(
+            f"Post Planner did not include production session {transcript.session_id}"
+        )
+    _LOG.info(
+        "production package registered: library=%s planner=%s session=%s",
+        content_library_path("aiwake"),
+        planner_path,
+        transcript.session_id,
+    )
+
+
 def run_pipeline(
     *,
     topic: str | None = None,
@@ -143,6 +243,11 @@ def run_pipeline(
     excluded_topics: Sequence[str] = (),
     excluded_foci: Sequence[str] = (),
     record_script: bool = True,
+    dynamic_animation: bool = False,
+    animation_skin: str = "v2",
+    left_puppet: str | None = None,
+    right_puppet: str | None = None,
+    production_publish: bool = False,
 ) -> PipelineResult:
     """Run a debate and (optionally) produce the video.
 
@@ -168,6 +273,14 @@ def run_pipeline(
         excluded_foci: Attack angles already used in a bulk batch.
         record_script: Persist the finished script fingerprint so later runs
             cannot reprint the same video.
+        dynamic_animation: False (default) keeps the classic terminal/
+            typewriter render 100% intact. True routes the finished
+            transcript + per-turn voice tracks to the parametric dual
+            face-off avatar animation engine instead — same inputs, same
+            ``video_path`` output slot, zero changes to the debate loop.
+        animation_skin: Versioned dynamic-animation preset (``v1`` or ``v2``).
+        left_puppet: Optional orchestrator puppet ID override.
+        right_puppet: Optional target puppet ID override.
 
     Returns:
         A :class:`PipelineResult`. Partial runs still return their transcript
@@ -193,6 +306,11 @@ def run_pipeline(
         cfg = cfg.with_model_override("target", target_model)
     if offline:
         cfg = force_offline(cfg)
+
+    if production_publish:
+        if not dynamic_animation or offline:
+            raise ValueError("production_publish requires a live dynamic_animation run")
+        _require_production_memory(topic)
 
     memory = DebateMemory(cfg.memory)
     if fresh_memory:
@@ -270,21 +388,51 @@ def run_pipeline(
             )
 
         if with_video and result.transcript.utterances:
-            # Imported here so a headless run never needs MoviePy/Pillow installed.
-            try:
-                from .media.renderer import render_transcript  # noqa: PLC0415
-            except ImportError:  # pragma: no cover — standalone extraction
-                from media.renderer import render_transcript  # type: ignore[no-redef]
+            if dynamic_animation:
+                # New parametric avatar battle path. Imported lazily so the
+                # classic pipeline never needs numpy/soundfile/ffmpeg-pipe
+                # machinery when this flag is off (the default).
+                try:
+                    from .animator_bridge import render_debate_animation  # noqa: PLC0415
+                except ImportError:  # pragma: no cover — standalone extraction
+                    from animator_bridge import render_debate_animation  # type: ignore[no-redef]
 
-            try:
-                video_path = render_transcript(
-                    result.transcript,
-                    cfg,
-                    audio_by_turn=voice_observer.assets if voice_observer else None,
-                    output_dir=media_dir,
-                )
-            except Exception as exc:  # noqa: BLE001 — a failed render must not lose the transcript
-                _LOG.error("render failed: %s", exc)
+                # Experimental animation battles never mix with production
+                # terminal reels: dedicated subfolder under the same
+                # {OUTPUT_PATH}/aiwake/ tree, not the shared media_dir.
+                animation_dir = media_dir / "animation_clips"
+                if production_publish:
+                    archive_animation_prototypes(animation_dir)
+                try:
+                    video_path = render_debate_animation(
+                        result.transcript,
+                        audio_by_turn=voice_observer.assets if voice_observer else None,
+                        output_dir=animation_dir,
+                        skin=animation_skin,
+                        left_puppet=left_puppet,
+                        right_puppet=right_puppet,
+                        audio_config=cfg.audio,
+                    )
+                except Exception as exc:  # noqa: BLE001 — a failed render must not lose the transcript
+                    _LOG.error("dynamic_animation render failed: %s", exc)
+            else:
+                # Legacy terminal/typewriter path — 100% unchanged, still the
+                # default. Imported here so a headless run never needs
+                # MoviePy/Pillow installed.
+                try:
+                    from .media.renderer import render_transcript  # noqa: PLC0415
+                except ImportError:  # pragma: no cover — standalone extraction
+                    from media.renderer import render_transcript  # type: ignore[no-redef]
+
+                try:
+                    video_path = render_transcript(
+                        result.transcript,
+                        cfg,
+                        audio_by_turn=voice_observer.assets if voice_observer else None,
+                        output_dir=media_dir,
+                    )
+                except Exception as exc:  # noqa: BLE001 — a failed render must not lose the transcript
+                    _LOG.error("render failed: %s", exc)
 
         if video_path is not None:
             result.transcript.metadata["video_path"] = str(video_path)
@@ -298,6 +446,12 @@ def run_pipeline(
                 reply_gap_s=cfg.render.reply_gap_s,
                 send_flash_s=cfg.render.send_flash_s,
             )
+            if production_publish:
+                _persist_production_package(
+                    transcript=result.transcript,
+                    video_path=video_path,
+                    media_dir=media_dir,
+                )
 
         pipeline_result = PipelineResult(
             transcript=result.transcript,
@@ -343,6 +497,11 @@ def run_bulk_pipeline(
     fresh_memory: bool = False,
     output_dir: Path | None = None,
     quiet: bool = False,
+    dynamic_animation: bool = False,
+    animation_skin: str = "v2",
+    left_puppet: str | None = None,
+    right_puppet: str | None = None,
+    production_publish: bool = False,
 ) -> BulkPipelineResult:
     """Produce ``quantity`` original videos. Never reprints a prior script.
 
@@ -377,6 +536,11 @@ def run_bulk_pipeline(
         "with_video": with_video,
         "output_dir": output_dir,
         "quiet": quiet,
+        "dynamic_animation": dynamic_animation,
+        "animation_skin": animation_skin,
+        "left_puppet": left_puppet,
+        "right_puppet": right_puppet,
+        "production_publish": production_publish,
     }
 
     for index in range(qty):

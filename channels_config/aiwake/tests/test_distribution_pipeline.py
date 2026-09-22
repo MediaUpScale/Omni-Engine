@@ -165,6 +165,8 @@ def test_linkedin_caption_follows_golden_reference() -> None:
     assert LINKEDIN_THESIS in caption
     assert "0% manual video editing" in caption
     assert LINKEDIN_CLOSING in caption
+    assert "http" not in caption.lower()
+    assert "diogolean.com" not in caption.lower()
     assert extract_hashtags(caption) == list(LINKEDIN_HASHTAGS)
     assert SOCIAL_RENDER_NOTE not in caption
 
@@ -188,6 +190,10 @@ def test_linkedin_leads_rotate_with_session_prompt() -> None:
 def test_prune_drops_pytest_temp_and_keeps_root_mp4(tmp_path: Path) -> None:
     video = tmp_path / "aiwake_debate_keep.mp4"
     video.write_bytes(b"0" * 8)
+    animation_dir = tmp_path / "animation_clips"
+    animation_dir.mkdir()
+    animated = animation_dir / "aiwake_battle_live-session.mp4"
+    animated.write_bytes(b"0" * 8)
     junk = (
         "C:/Users/Freedom or Death/AppData/Local/Temp/pytest-of-x/"
         "pytest-1/test_sync_enrich_then_push0/aiwake_debate_sess9.mp4"
@@ -195,11 +201,13 @@ def test_prune_drops_pytest_temp_and_keeps_root_mp4(tmp_path: Path) -> None:
     assert is_ephemeral_test_path(junk) is True
     assert resolve_root_production_mp4(junk, roots=[tmp_path]) is None
     assert resolve_root_production_mp4(video, roots=[tmp_path]) == video.resolve()
+    assert resolve_root_production_mp4(animated, roots=[tmp_path]) == animated.resolve()
     library = tmp_path / "content_library.json"
     library.write_text(
         json.dumps(
             [
                 {"session_id": "keep", "video_path": str(video)},
+                {"session_id": "animated", "video_path": str(animated)},
                 {"session_id": "junk", "video_path": junk, "local_path": junk},
             ]
         ),
@@ -207,8 +215,7 @@ def test_prune_drops_pytest_temp_and_keeps_root_mp4(tmp_path: Path) -> None:
     )
     removed, kept = prune_content_library(library, roots=[tmp_path])
     assert removed == 1
-    assert len(kept) == 1
-    assert kept[0]["session_id"] == "keep"
+    assert {row["session_id"] for row in kept} == {"keep", "animated"}
 
 
 def test_planner_imports_root_videos_with_optimized_captions(tmp_path: Path) -> None:
@@ -278,8 +285,14 @@ def test_planner_imports_root_videos_with_optimized_captions(tmp_path: Path) -> 
     assert LINKEDIN_THESIS not in social["optimized_caption"]
     assert len(extract_hashtags(social["optimized_caption"])) == MAX_HASHTAGS
     assert "\n\n" in str(social["optimized_caption"])
-    assert (tmp_path / "postplanner" / "post_planner_reels_tiktok.json").is_file()
-    assert (tmp_path / "postplanner" / "post_planner_linkedin.json").is_file()
+    reels = json.loads((tmp_path / "postplanner" / "post_planner_reels_tiktok.json").read_text(encoding="utf-8"))
+    linkedin = json.loads((tmp_path / "postplanner" / "post_planner_linkedin.json").read_text(encoding="utf-8"))
+    assert reels[0]["session_id"] == "sess-plan"
+    assert "b2_url" in reels[0]
+    assert "caption" in reels[0]
+    assert linkedin[0]["session_id"] == "sess-plan"
+    assert "linkedin_caption" in linkedin[0]
+    assert "b2_url" in linkedin[0]
     saved = json.loads(library.read_text(encoding="utf-8"))
     prod = next(item for item in saved if item["session_id"] == "sess-plan")
     assert LINKEDIN_THESIS in prod["linkedin_caption"]

@@ -293,7 +293,7 @@ class GeminiVisualEval:
         labels: Sequence[str] | None = None,
     ) -> VisualEvalResult:
         from google.genai import types
-        from google_guardrail import guarded_generate_content, make_guarded_gemini_client
+        from core.google_guardrail import guarded_generate_content, make_guarded_gemini_client
 
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY missing — Gemini visual eval disabled.")
@@ -361,7 +361,7 @@ def resolve_visual_eval_provider(
         if not gem_key:
             return None
         try:
-            from google_guardrail import is_google_api_allowed
+            from core.google_guardrail import is_google_api_allowed
 
             if not is_google_api_allowed():
                 return None

@@ -167,7 +167,7 @@ ENGINE_DEBUG: bool = _bool_env("ENGINE_DEBUG", False)
 IMAGE_API_TIMEOUT_S: float = float(os.getenv("IMAGE_API_TIMEOUT_S") or "25")
 
 # ---------------------------------------------------------------------------
-# Google / Gemini emergency billing guardrails (see google_guardrail.py)
+# Google / Gemini emergency billing guardrails (see core/google_guardrail.py)
 # ---------------------------------------------------------------------------
 # ALLOW_GOOGLE_API=false → every Gemini/Imagen call aborts before the HTTP request.
 # Unset defaults to True so tests/CI stay unblocked; the factory .env may force false.

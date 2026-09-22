@@ -6,4 +6,5 @@
     python -m channels_config.aiwake.tools.sync_youtube_metadata
     python -m channels_config.aiwake.tools.sync_youtube_live_metadata
     python -m channels_config.aiwake.tools.post_planner
+    python -m channels_config.aiwake.tools.seed_supermemory
 """

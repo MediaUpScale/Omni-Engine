@@ -73,6 +73,8 @@ core/economic_reel_lofi/store/aphorism_recent.json
 *TEMP_MPY_wvf_snd*
 .cache/
 .pytest_cache/
+.supermemory/
+_e2e_frames/
 *.log
 
 # OS noise
@@ -141,6 +143,10 @@ channels_config/*/*/metrics/
 # Channel notebook photo templates (binary backgrounds)
 channels_config/momma_circle/image_texts_templates/
 channels_config/*/image_texts_templates/
+
+# Auto-downloaded third-party binaries (Rhubarb Lip Sync, ~164 MB).
+# core/animator/rhubarb.py re-fetches this on demand.
+core/animator/bin/
 
 # ==========================================
 # Heavy Assets & Render Outputs

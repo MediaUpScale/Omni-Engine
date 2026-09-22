@@ -249,7 +249,7 @@ def resolve_root_production_mp4(
     *,
     roots: list[Path] | None = None,
 ) -> Path | None:
-    """Return the verified root MP4, or None if the asset is not production."""
+    """Return a verified root or animation-clips MP4, else None."""
     raw = str(path or "").strip()
     if not raw:
         return None
@@ -281,8 +281,14 @@ def resolve_root_production_mp4(
         seen.add(resolved)
         if not resolved.is_file() or resolved.suffix.lower() != ".mp4":
             continue
-        if resolved.parent in bases:
-            return resolved
+        for base in bases:
+            if resolved.parent == base:
+                return resolved
+            if (
+                resolved.parent == base / "animation_clips"
+                and resolved.name.lower().startswith("aiwake_battle_")
+            ):
+                return resolved
     return None
 
 

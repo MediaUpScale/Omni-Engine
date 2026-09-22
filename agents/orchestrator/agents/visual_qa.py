@@ -220,7 +220,7 @@ Return JSON:
   fix_instructions (actionable camera/lighting rewrite for FLUX; empty if passed).
 """.strip()
 
-        from google_guardrail import guarded_generate_content, make_guarded_gemini_client
+        from core.google_guardrail import guarded_generate_content, make_guarded_gemini_client
 
         client = make_guarded_gemini_client(key)
         from quality.VisualQA_Agent import config as vqa_config

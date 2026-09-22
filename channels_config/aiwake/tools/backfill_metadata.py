@@ -89,7 +89,8 @@ POST_TYPE = "AIWAKE_REEL"
 CORE_HASHTAGS: tuple[str, ...] = DEFAULT_HASHTAGS
 PINTEREST_BOARD = "AI Consciousness & Tech"
 YOUTUBE_CATEGORY_ID = YOUTUBE_CATEGORY_SCIENCE_TECH
-_VIDEO_PREFIX = "aiwake_debate_"
+_VIDEO_PREFIXES = ("aiwake_debate_", "aiwake_battle_")
+_VIDEO_PREFIX = _VIDEO_PREFIXES[0]
 SKIP_DIR_NAMES = frozenset({
     "tmp", "temp", "scratch", "__pycache__", ".git", "needs_metadata",
     "reproved", "tests", "archive", "posted_facebook",
@@ -159,8 +160,9 @@ def scan_videos(outputs_dir: Path) -> list[Path]:
 
 def session_id_from_video(path: Path) -> str:
     stem = path.stem
-    if stem.lower().startswith(_VIDEO_PREFIX):
-        return stem[len(_VIDEO_PREFIX):]
+    for prefix in _VIDEO_PREFIXES:
+        if stem.lower().startswith(prefix):
+            return stem[len(prefix):]
     match = _SESSION_FROM_NAME.match(stem)
     return match.group("sid") if match else stem
 

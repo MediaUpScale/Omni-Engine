@@ -113,6 +113,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Visual theme: classic_terminal (default) or cyberpunk",
     )
     parser.add_argument(
+        "--render-mode",
+        choices=("classic_terminal", "dynamic_animation"),
+        default="classic_terminal",
+        metavar="MODE",
+        help=(
+            "classic_terminal (default) keeps the legacy typewriter reel 100%% "
+            "intact. dynamic_animation routes the same transcript + voice tracks "
+            "through the parametric dual face-off avatar animation engine instead."
+        ),
+    )
+    parser.add_argument(
+        "--dynamic-animation",
+        action="store_true",
+        help="Shorthand for --render-mode dynamic_animation.",
+    )
+    parser.add_argument(
+        "--skin",
+        choices=("v1", "v2"),
+        default="v2",
+        help="Dynamic-animation skin preset: archived retro robots (v1) or humanoid cyborgs (v2, default).",
+    )
+    parser.add_argument(
+        "--left-puppet",
+        metavar="ID",
+        help="Override the orchestrator puppet ID from {ASSETS_PATH}/puppets/.",
+    )
+    parser.add_argument(
+        "--right-puppet",
+        metavar="ID",
+        help="Override the target puppet ID from {ASSETS_PATH}/puppets/.",
+    )
+    parser.add_argument(
         "--test-bgm",
         action="store_true",
         help="Force-overwrite assets/bgm/test_track_lyria.wav with a fresh Lyria 3 clip, print the path, then exit",
@@ -165,7 +197,8 @@ def _print_model_table(settings) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a shell exit code."""
-    args = build_parser().parse_args(argv)
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    args = build_parser().parse_args(raw_argv)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -265,10 +298,24 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc))
         return 2
 
+    dynamic_animation = args.dynamic_animation or args.render_mode == "dynamic_animation"
+    explicit_mode = any(
+        token == "--mode" or token.startswith("--mode=")
+        for token in raw_argv
+    )
+    effective_mode = args.mode
+    if dynamic_animation and not explicit_mode:
+        effective_mode = "cornered"
+    if dynamic_animation and not args.offline:
+        if not args.orchestrator:
+            settings = settings.with_model_override("orchestrator", "gemini-flash")
+        if not args.target:
+            settings = settings.with_model_override("target", "llama-70b")
+
     pipeline_kwargs = {
         "topic": args.topic,
         "turns": args.turns,
-        "mode": args.mode,
+        "mode": effective_mode,
         "provocation_focus": args.provocation_focus,
         "settings": settings,
         "offline": args.offline,
@@ -277,6 +324,11 @@ def main(argv: list[str] | None = None) -> int:
         "fresh_memory": args.fresh_memory,
         "output_dir": args.output_dir,
         "quiet": args.quiet,
+        "dynamic_animation": dynamic_animation,
+        "animation_skin": args.skin,
+        "left_puppet": args.left_puppet,
+        "right_puppet": args.right_puppet,
+        "production_publish": dynamic_animation and not args.offline,
     }
 
     if args.quantity > 1:

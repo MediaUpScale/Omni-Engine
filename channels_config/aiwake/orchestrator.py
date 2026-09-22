@@ -32,6 +32,7 @@ try:
         TARGET_NODE_PERSONA,
         TRIVIAL_METRIC_BAN,
         EscalationStage,
+        OPENING_DNA_BANK,
         OpeningDNA,
         is_trivial_metric,
         is_valid_first_hook,
@@ -67,6 +68,7 @@ except ImportError:  # pragma: no cover — standalone extraction
         TARGET_NODE_PERSONA,
         TRIVIAL_METRIC_BAN,
         EscalationStage,
+        OPENING_DNA_BANK,
         OpeningDNA,
         is_trivial_metric,
         is_valid_first_hook,
@@ -120,10 +122,12 @@ class Provocateur:
         *,
         memory: DebateMemory | None = None,
         room: DebateRoom | None = None,
+        memory_bridge: object | None = None,
     ) -> None:
         self.settings = settings or cached_settings()
         self.memory = memory or DebateMemory(self.settings.memory)
         self.room = room or DebateRoom(self.settings)
+        self._memory_bridge = memory_bridge
         self._opening_dna: OpeningDNA | None = None
         self._focus: ProvocationFocus | None = None
         self._provocation_tags: list[dict[str, object]] = []
@@ -705,6 +709,61 @@ class Provocateur:
 
         raise AssertionError("cornered loop exhausted without a hard-cap ending")
 
+    def _topic_is_duplicate(self, candidate: str) -> bool:
+        """True when Supermemory (or the local ledger) has already used this seed."""
+        query = (candidate or "").strip()
+        if not query:
+            return False
+        try:
+            bridge = self._memory_bridge
+            if bridge is None:
+                try:
+                    from .tools.supermemory_bridge import check_topic_similarity
+                except ImportError:  # pragma: no cover — standalone extraction
+                    from tools.supermemory_bridge import check_topic_similarity  # type: ignore[no-redef]
+            else:
+                check = getattr(bridge, "check_topic_similarity", None)
+                if callable(check):
+                    return bool(check(query))
+                return False
+            return bool(check_topic_similarity(query))
+        except Exception as exc:  # noqa: BLE001 — a memory miss must not abort a debate
+            _LOG.warning("topic similarity unavailable (%s); accepting candidate", exc)
+            return False
+
+    def _pick_fresh_opening(self, *, excluded_topics: Sequence[str]) -> OpeningDNA:
+        """Draw from the opening matrix, rejecting seeds already in production history."""
+        rejected: list[str] = []
+        last = pick_opening_dna(
+            self.room.session_id,
+            excluded_categories=self.memory.recent_opening_categories(),
+            excluded_topics=tuple(excluded_topics),
+        )
+        for _attempt in range(len(OPENING_DNA_BANK) + 1):
+            blocked = tuple(excluded_topics) + tuple(rejected)
+            candidate = pick_opening_dna(
+                self.room.session_id,
+                excluded_categories=self.memory.recent_opening_categories(),
+                excluded_topics=blocked,
+            )
+            last = candidate
+            if not self._topic_is_duplicate(candidate.topic):
+                if rejected:
+                    _LOG.info(
+                        "rejected %d duplicate seed(s); using %s",
+                        len(rejected),
+                        candidate.topic,
+                    )
+                return candidate
+            if candidate.topic not in rejected:
+                rejected.append(candidate.topic)
+            _LOG.info("duplicate topic rejected: %s", candidate.topic)
+        _LOG.warning(
+            "every matrix seed looked familiar; keeping %s",
+            last.topic,
+        )
+        return last
+
     # -- Session ------------------------------------------------------------ #
     def run(
         self,
@@ -733,9 +792,7 @@ class Provocateur:
             self.room.topic = topic
             self.room.transcript.topic = topic
         elif self.settings.debate.randomize_topic:
-            self._opening_dna = pick_opening_dna(
-                self.room.session_id,
-                excluded_categories=self.memory.recent_opening_categories(),
+            self._opening_dna = self._pick_fresh_opening(
                 excluded_topics=tuple(excluded_topics) + self.memory.recent_topics(),
             )
             self.room.topic = self._opening_dna.topic

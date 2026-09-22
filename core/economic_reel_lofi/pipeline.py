@@ -36,7 +36,7 @@ from core.economic_reel_lofi.riso_prompt_bank import (
     assign_riso_prompts_for_scenes,
     export_active_library_diff,
 )
-from google_guardrail import guarded_generate_content, make_guarded_gemini_client
+from core.google_guardrail import guarded_generate_content, make_guarded_gemini_client
 from agents.writer.script_agent import (
     _sanitize_caption_typos,
     assess_object_beat_continuity,

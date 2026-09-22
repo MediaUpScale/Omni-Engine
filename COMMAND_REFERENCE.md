@@ -367,10 +367,10 @@ Sheet-driven (Momma Circle quotes). No `--channel` flag — override the sheet i
 `python agents/posting/facebook_scheduler/record_mode.py --url https://www.facebook.com/MommaCircle --output recorded_workflow.py`  
 *// Launches Playwright Codegen pointed at the Momma Circle page so selectors can be recaptured after a Facebook UI change.*
 
-`python tests/test_momma_circle_post.py --dry-run`  
+`python channels_config/momma_circle/tests/test_momma_circle_post.py --dry-run`
 *// Verifies the Momma Circle Graph API token/page ID without publishing.*
 
-`python tests/test_momma_circle_post.py --message "Connection test from the factory"`  
+`python channels_config/momma_circle/tests/test_momma_circle_post.py --message "Connection test from the factory"`
 *// Publishes a one-off Graph API test post to the Momma Circle page (uses FB_MOMMA_CIRCLE_* env vars).*
 
 ---

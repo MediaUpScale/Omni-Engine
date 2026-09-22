@@ -1032,7 +1032,7 @@ def evaluate_image(
         )
     )
 
-    from google_guardrail import guarded_generate_content, make_guarded_gemini_client
+    from core.google_guardrail import guarded_generate_content, make_guarded_gemini_client
 
     client = make_guarded_gemini_client(config.GEMINI_API_KEY)
     model_id = config.GEMINI_CRITIC_MODEL

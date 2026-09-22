@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[3]
 PY = ROOT / ".venv" / "Scripts" / "python.exe"
 LIB = ROOT / "channels_config" / "master_mei" / "store" / "content_library.json"
 PAGE = "master_mei"

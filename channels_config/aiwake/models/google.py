@@ -82,7 +82,7 @@ class GoogleProvider(LLMProvider):
                 self.spec.model,
                 "google-genai is not installed",
             ) from exc
-        from google_guardrail import make_guarded_gemini_client
+        from core.google_guardrail import make_guarded_gemini_client
 
         self._client = make_guarded_gemini_client(
             self.api_key,
@@ -115,7 +115,7 @@ class GoogleProvider(LLMProvider):
 
             system, contents = self._wire_messages(messages)
             started = time.perf_counter()
-            from google_guardrail import guarded_generate_content
+            from core.google_guardrail import guarded_generate_content
 
             response = guarded_generate_content(
                 self._get_client(),

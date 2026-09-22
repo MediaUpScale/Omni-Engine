@@ -99,7 +99,7 @@ def _call_generate_content_with_backoff(
     Returns ``(response, advanced)`` where ``advanced=True`` means the caller
     should skip to the next model in the chain (404 / timeout / exhausted retries).
     """
-    from google_guardrail import (
+    from core.google_guardrail import (
         GoogleAPIBlockedError,
         GoogleBudgetExceededError,
         estimate_call_cost_usd,
@@ -554,7 +554,7 @@ class GeminiImageAdapter(ImageProvider):
                 )
                 self._gemini_client = make_gemini_client_with_fallback(key)
             except Exception:
-                from google_guardrail import make_guarded_gemini_client
+                from core.google_guardrail import make_guarded_gemini_client
 
                 self._gemini_client = make_guarded_gemini_client(api_key=key)
         return self._gemini_client

@@ -65,7 +65,7 @@ def make_gemini_client(api_key: str, *, api_version: str = "v1beta") -> genai.Cl
     The SDK sends ``x-goog-api-key`` automatically.
     Honours ``ALLOW_GOOGLE_API`` — raises ``GoogleAPIBlockedError`` when false.
     """
-    from google_guardrail import assert_google_allowed, make_guarded_gemini_client
+    from core.google_guardrail import assert_google_allowed, make_guarded_gemini_client
 
     assert_google_allowed(context="gemini_utils.make_gemini_client")
     return make_guarded_gemini_client(
@@ -441,7 +441,7 @@ def generate_content_with_model_fallback(
 
     If the chain is exhausted, re-raises the last exception.
     """
-    from google_guardrail import (
+    from core.google_guardrail import (
         GoogleAPIBlockedError,
         GoogleBudgetExceededError,
         estimate_call_cost_usd,

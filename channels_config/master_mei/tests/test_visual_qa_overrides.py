@@ -2,17 +2,11 @@
 """Smoke-test Master Mei Scene1/3/7/penultimate RAG overrides + audio knobs."""
 from __future__ import annotations
 
-from pathlib import Path as _ReorgPath
-import sys as _reorg_sys
-_REORG_ROOT = _ReorgPath(__file__).resolve().parents[1]
-if str(_REORG_ROOT) not in _reorg_sys.path:
-    _reorg_sys.path.insert(0, str(_REORG_ROOT))
-
 import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
