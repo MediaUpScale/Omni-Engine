@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +53,27 @@ def load_mono_waveform(audio_path: Path) -> tuple[np.ndarray, int, float]:
         duration = len(mono) / float(sr)
         return mono.astype(np.float32), int(sr), duration
     except Exception as exc:  # noqa: BLE001 — soundfile can't read every mp3 encoder
-        _LOG.debug("soundfile failed on %s (%s); falling back to moviepy", audio_path, exc)
+        _LOG.debug("soundfile failed on %s (%s); trying built-in decoders", audio_path, exc)
+
+    if audio_path.suffix.lower() == ".wav":
+        try:
+            with wave.open(str(audio_path), "rb") as source:
+                channels = source.getnchannels()
+                sample_width = source.getsampwidth()
+                sr = source.getframerate()
+                raw = source.readframes(source.getnframes())
+            dtype_by_width = {1: np.uint8, 2: np.dtype("<i2"), 4: np.dtype("<i4")}
+            dtype = dtype_by_width[sample_width]
+            data = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+            if sample_width == 1:
+                data = (data - 128.0) / 128.0
+            else:
+                data /= float(1 << ((sample_width * 8) - 1))
+            if channels > 1:
+                data = data.reshape(-1, channels).mean(axis=1)
+            return data, int(sr), len(data) / float(sr)
+        except (KeyError, wave.Error, ValueError) as exc:
+            _LOG.debug("stdlib WAV decode failed on %s (%s); using moviepy", audio_path, exc)
 
     from moviepy import AudioFileClip  # noqa: PLC0415
 
@@ -99,12 +120,13 @@ class AudioAnalyzer:
         rms_norm = self._normalize(rms)
 
         active_speaker = active_speaker_lookup(turns, self.fps, n_frames)
+        speaking_speaker = speaking_speaker_lookup(turns, self.fps, n_frames)
         emotion = emotion_lookup(turns, self.fps, n_frames)
         speakers = sorted({t.speaker for t in turns}) or ["speaker"]
 
         mouth_state: dict[str, list[int]] = {sp: [0] * n_frames for sp in speakers}
         for i in range(n_frames):
-            speaker = active_speaker[i]
+            speaker = speaking_speaker[i]
             if speaker is None or speaker not in mouth_state:
                 continue
             mouth_state[speaker][i] = self._quantize_mouth(rms_norm[i])
@@ -113,6 +135,7 @@ class AudioAnalyzer:
             sp: self._blink_schedule(n_frames, seed=self.seed)
             for sp in speakers
         }
+        self._apply_reaction_blinks(turns, eye_state, n_frames)
         viseme = self._viseme_tracks(turns, rms_norm, n_frames, speakers, use_rhubarb=use_rhubarb)
 
         return AnalyzedAudio(
@@ -121,6 +144,7 @@ class AudioAnalyzer:
             n_frames=n_frames,
             rms=rms_norm.tolist(),
             active_speaker=active_speaker,
+            speaking_speaker=speaking_speaker,
             mouth_state=mouth_state,
             eye_state=eye_state,
             viseme=viseme,
@@ -148,7 +172,7 @@ class AudioAnalyzer:
         """
         tracks: dict[str, list[str]] = {sp: [REST_VISEME] * n_frames for sp in speakers}
         for turn in turns:
-            start = max(0, int(round(turn.start_time * self.fps)))
+            start = max(0, int(round(turn.speech_start * self.fps)))
             end = min(n_frames, int(round(turn.end_time * self.fps)))
             if end <= start:
                 continue
@@ -164,6 +188,25 @@ class AudioAnalyzer:
             track = tracks.setdefault(turn.speaker, [REST_VISEME] * n_frames)
             track[start:end] = frames
         return tracks
+
+    def _apply_reaction_blinks(
+        self,
+        turns: list[DialogueTurn],
+        eye_state: dict[str, list[int]],
+        n_frames: int,
+    ) -> None:
+        """Center one restrained five-frame blink inside each anticipation cut."""
+        for turn in turns:
+            if turn.speech_start <= turn.start_time + (1.0 / self.fps):
+                continue
+            states = eye_state.get(turn.speaker)
+            if states is None:
+                continue
+            center_s = turn.start_time + ((turn.speech_start - turn.start_time) * 0.55)
+            center = int(round(center_s * self.fps))
+            if center - 2 < 0 or center + 2 >= n_frames:
+                continue
+            states[center - 2 : center + 3] = [0, 1, 2, 1, 0]
 
     # -- RMS envelope -------------------------------------------------- #
     def _frame_rms(self, mono: np.ndarray, sample_rate: int, n_frames: int) -> np.ndarray:
@@ -245,14 +288,33 @@ def active_speaker_lookup(turns: list[DialogueTurn], fps: int, n_frames: int) ->
     return out
 
 
+def speaking_speaker_lookup(
+    turns: list[DialogueTurn],
+    fps: int,
+    n_frames: int,
+) -> list[str | None]:
+    """Frame-indexed voice owner, excluding pre-speech reaction windows."""
+    out: list[str | None] = [None] * n_frames
+    for turn in turns:
+        start = max(0, int(round(turn.speech_start * fps)))
+        end = min(n_frames, int(round(turn.end_time * fps)))
+        if end > start:
+            out[start:end] = [turn.speaker] * (end - start)
+    return out
+
+
 def emotion_lookup(turns: list[DialogueTurn], fps: int, n_frames: int) -> list[str]:
     """Frame-indexed deterministic expression state from the dialogue ledger."""
     out = ["neutral"] * n_frames
     for turn in turns:
         start = max(0, int(round(turn.start_time * fps)))
+        speech_start = min(n_frames, int(round(turn.speech_start * fps)))
         end = min(n_frames, int(round(turn.end_time * fps)))
-        if end > start:
-            out[start:end] = [turn.emotion or "neutral"] * (end - start)
+        if speech_start > start:
+            reaction = turn.reaction_emotion or turn.emotion or "neutral"
+            out[start:speech_start] = [reaction] * (speech_start - start)
+        if end > speech_start:
+            out[speech_start:end] = [turn.emotion or "neutral"] * (end - speech_start)
     return out
 
 
@@ -262,4 +324,5 @@ __all__ = [
     "breathing_offset",
     "emotion_lookup",
     "load_mono_waveform",
+    "speaking_speaker_lookup",
 ]

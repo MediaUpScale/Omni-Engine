@@ -63,7 +63,7 @@ AIWAKE_OUTPUTS_DIR = page_outputs_dir("aiwake", create=True)
 HARNESS_DIR = AIWAKE_OUTPUTS_DIR / "_test_harness"
 ANIMATION_CLIPS_DIR = AIWAKE_OUTPUTS_DIR / "animation_clips"
 
-AVATAR_BATTLE_MP4 = ANIMATION_CLIPS_DIR / "aiwake_full_battle_v2.mp4"
+AVATAR_BATTLE_MP4 = ANIMATION_CLIPS_DIR / "test_avatar_battle_v2.mp4"
 CLASSIC_MP4 = HARNESS_DIR / "test_classic_terminal.mp4"
 PROOF_GEMINI = ANIMATION_CLIPS_DIR / "proof_gemini_turn.png"
 PROOF_BLINK = ANIMATION_CLIPS_DIR / "proof_blink.png"
@@ -409,8 +409,7 @@ def _decode_muxed_audio_metrics(path: Path) -> dict[str, float]:
     """Decode the delivered MP4's AAC stream to PCM and measure audibility."""
     import tempfile
 
-    import soundfile as sf
-
+    from core.animator.audio_analyzer import load_mono_waveform
     from core.animator.renderer import resolve_ffmpeg
 
     wav_path = Path(tempfile.gettempdir()) / f"{path.stem}_decoded_audio.wav"
@@ -435,8 +434,7 @@ def _decode_muxed_audio_metrics(path: Path) -> dict[str, float]:
         completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
         if completed.returncode != 0 or not wav_path.is_file():
             raise AssertionError(f"could not decode muxed AAC stream: {completed.stderr[-600:]}")
-        samples, sample_rate = sf.read(str(wav_path), dtype="float32", always_2d=False)
-        mono = samples.mean(axis=1) if samples.ndim > 1 else samples
+        mono, sample_rate, _ = load_mono_waveform(wav_path)
         peak = float(np.max(np.abs(mono))) if mono.size else 0.0
         rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
         active_ratio = float(np.mean(np.abs(mono) > 0.01)) if mono.size else 0.0
@@ -452,10 +450,9 @@ def _decode_muxed_audio_metrics(path: Path) -> dict[str, float]:
 
 def _background_bed_gap_rms(path: Path, *, gap_start_s: float, gap_end_s: float) -> float:
     """Measure the non-dialogue bed inside a known inter-turn silent gap."""
-    import soundfile as sf
+    from core.animator.audio_analyzer import load_mono_waveform
 
-    samples, sample_rate = sf.read(str(path), dtype="float32", always_2d=False)
-    mono = samples.mean(axis=1) if samples.ndim > 1 else samples
+    mono, sample_rate, _ = load_mono_waveform(path)
     start = int(round((gap_start_s + 0.05) * sample_rate))
     end = int(round((gap_end_s - 0.05) * sample_rate))
     window = mono[start:end]
@@ -636,7 +633,7 @@ def run_dynamic_animation_stage() -> StageResult:
     transcript, audio_by_turn = _build_real_tts_transcript_and_audio(HARNESS_DIR / "_spoken_audio")
     source = "Edge TTS Cornered-mode spoken fixture"
     expected_duration = sum(asset.duration_s for asset in audio_by_turn.values()) + (
-        0.4 * len(transcript.utterances)
+        0.4 * max(0, len(transcript.utterances) - 1)
     )
     if not FULL_EPISODE_MIN_S <= expected_duration <= FULL_EPISODE_MAX_S:
         return StageResult(
@@ -713,7 +710,9 @@ def run_dynamic_animation_stage() -> StageResult:
         and 0.88 <= decoded_peak <= 0.94
         and bgm_gap_rms > 0.001
     )
-    size_compliant = 8_000_000 <= size <= 18_000_000
+    # Unconstrained CRF 19 intentionally spends more bits on watercolor
+    # gradients and fine ink than the former macroblock-prone VBV encode.
+    size_compliant = 8_000_000 <= size <= 36_000_000
     duration_compliant = FULL_EPISODE_MIN_S <= duration_s <= FULL_EPISODE_MAX_S
     ok = size_compliant and duration_compliant and has_video and audible
     _LOG.info(
@@ -742,7 +741,7 @@ def run_dynamic_animation_stage() -> StageResult:
             if ok
             else (
                 f"video={has_video} size={size / 1e6:.2f}MB "
-                f"(required 8-18MB) duration={duration_s:.2f}s "
+                f"(required 8-36MB) duration={duration_s:.2f}s "
                 f"(required {FULL_EPISODE_MIN_S:.0f}-{FULL_EPISODE_MAX_S:.0f}s) "
                 f"decoded_peak={decoded_peak:.4f} "
                 f"decoded_rms={decoded_rms:.4f} active_ratio={active_ratio:.4f} "
@@ -771,7 +770,7 @@ def _grab_frame(video: Path, timestamp: float) -> np.ndarray:
     """Decode the frame at ``timestamp`` as RGB, reading sequentially.
 
     Sequential decode rather than a keyframe seek: a seek on a
-    single-keyframe ultrafast encode can silently land on a different
+    sparse-keyframe H.264 encode can silently land on a different
     frame, which would make the evidence meaningless.
     """
     cap = cv2.VideoCapture(str(video))

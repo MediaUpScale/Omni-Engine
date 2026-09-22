@@ -39,11 +39,37 @@ def viseme_layer_key(viseme: str) -> str:
     return f"mouth_{viseme.upper()[:1]}"
 
 
+REST_MOUTH_STATES: tuple[str, ...] = (
+    "neutral",
+    "smug_smile",
+    "stressed_grimace",
+)
+
+
+def rest_mouth_layer_key(state: str) -> str:
+    normalized = (state or "neutral").strip().lower()
+    normalized = {
+        "smug": "smug_smile",
+        "defeated": "stressed_grimace",
+        "stressed": "stressed_grimace",
+    }.get(normalized, normalized)
+    if normalized not in REST_MOUTH_STATES:
+        normalized = "neutral"
+    if normalized == "neutral":
+        return "mouth_X_neutral"
+    return f"mouth_{normalized}"
+
+
 #: The phonetic mouth set: one sprite per canonical Rhubarb shape.
 VISEME_LAYER_KEYS: tuple[str, ...] = tuple(viseme_layer_key(v) for v in VISEMES)
+REST_MOUTH_LAYER_KEYS: tuple[str, ...] = tuple(
+    rest_mouth_layer_key(state) for state in REST_MOUTH_STATES
+)
 
 #: Everything a fully-featured skin ships: base layers + the viseme set.
-ALL_LAYER_KEYS: tuple[str, ...] = LAYER_KEYS + VISEME_LAYER_KEYS
+ALL_LAYER_KEYS: tuple[str, ...] = (
+    LAYER_KEYS + VISEME_LAYER_KEYS + REST_MOUTH_LAYER_KEYS
+)
 
 _EYE_LAYER_BY_STATE = {0: "eyes_open", 1: "eyes_half", 2: "eyes_blink"}
 
@@ -52,10 +78,11 @@ _EYE_LAYER_BY_STATE = {0: "eyes_open", 1: "eyes_half", 2: "eyes_blink"}
 _STATE_VISEME = {0: "A", 1: "C", 2: "D"}
 _EMOTION_BROW_ANGLES = {
     "skeptical": (0.0, 0.0),
-    "neutral": (1.0, -1.0),
-    "inquisitor": (6.0, -6.0),
-    "resolute": (3.5, -3.5),
-    "conceded": (0.0, 0.0),
+    "neutral": (0.0, 0.0),
+    "inquisitor": (18.0, -18.0),
+    "resolute": (3.0, -3.0),
+    "conceded": (-18.0, 18.0),
+    "defeated": (-18.0, 18.0),
 }
 BROW_STATES: tuple[str, ...] = (
     "neutral",
@@ -78,7 +105,18 @@ def emotion_brow_angles(emotion: str, pulse_deg: float = 0.0) -> tuple[float, fl
 
 def emotion_brow_state(emotion: str) -> str:
     state = (emotion or "neutral").strip().lower()
+    if state in {"defeated", "stressed"}:
+        return "conceded"
     return state if state in BROW_STATES else "neutral"
+
+
+def emotion_rest_mouth_state(emotion: str) -> str:
+    state = (emotion or "neutral").strip().lower()
+    if state == "inquisitor":
+        return "smug_smile"
+    if state in {"conceded", "defeated", "stressed"}:
+        return "stressed_grimace"
+    return "neutral"
 
 @dataclass(frozen=True, slots=True)
 class PuppetSkin:
@@ -165,6 +203,9 @@ class PuppetSkin:
         for viseme in VISEMES:
             key = viseme_layer_key(viseme)
             layer_files[key] = resolve_file(key)
+        for state in REST_MOUTH_STATES:
+            key = rest_mouth_layer_key(state)
+            layer_files[key] = resolve_file(key)
 
         canvas_raw = data.get("canvas_size", _DEFAULT_CANVAS_SIZE)
         reference_canvas_size = _as_vec2(canvas_raw)
@@ -233,6 +274,9 @@ class PuppetRig:
         for viseme in VISEMES:
             key = viseme_layer_key(viseme)
             layers[key] = Image.open(skin.layer_path(key)).convert("RGBA")
+        for state in REST_MOUTH_STATES:
+            key = rest_mouth_layer_key(state)
+            layers[key] = Image.open(skin.layer_path(key)).convert("RGBA")
 
         # The body defines the aligned sprite canvas. External high-res
         # overlays are accepted as-is when aligned, or normalized to that
@@ -278,17 +322,24 @@ class PuppetRig:
         # overlays at runtime. Prebuilding all 9x3 full-canvas combinations
         # would exceed a gigabyte for two 1536x2752 artist rigs.
         self._head_stack: dict[str, np.ndarray] = {}
+        self._rest_head_cache: dict[str, np.ndarray] = {}
+        self._rest_mouth_crop: dict[
+            str,
+            tuple[np.ndarray, tuple[int, int, int, int]],
+        ] = {}
         self._head_bbox: dict[str, tuple[int, int, int, int]] = {}
         self._mouth_overlay: dict[str, np.ndarray] = {}
         self._mouth_bbox: dict[str, tuple[int, int, int, int]] = {}
         for viseme in VISEMES:
             mouth_layer = layers[viseme_layer_key(viseme)]
             mouth_arr = np.asarray(mouth_layer, dtype=np.uint8).copy()
-            self._mouth_overlay[viseme] = mouth_arr
-            self._mouth_bbox[viseme] = _alpha_bbox(
+            mouth_bbox = _alpha_bbox(
                 mouth_arr[..., 3].astype(np.float32),
                 pad=3,
             )
+            mx0, my0, mx1, my1 = mouth_bbox
+            self._mouth_overlay[viseme] = mouth_arr[my0:my1, mx0:mx1].copy()
+            self._mouth_bbox[viseme] = mouth_bbox
             head_stack = Image.new("RGBA", self.canvas_size, (0, 0, 0, 0))
             head_stack.alpha_composite(layers["head"])
             head_stack.alpha_composite(layers["eyes_open"])
@@ -299,6 +350,18 @@ class PuppetRig:
                 head_arr[..., 3].astype(np.float32),
                 pad=80,
             )
+        bare_head = Image.new("RGBA", self.canvas_size, (0, 0, 0, 0))
+        bare_head.alpha_composite(layers["head"])
+        bare_head.alpha_composite(layers["eyes_open"])
+        self._bare_head = np.asarray(bare_head, dtype=np.uint8).copy()
+        for state in REST_MOUTH_STATES:
+            mouth = np.asarray(
+                layers[rest_mouth_layer_key(state)],
+                dtype=np.uint8,
+            )
+            bbox = _alpha_bbox(mouth[..., 3].astype(np.float32), pad=3)
+            x0, y0, x1, y1 = bbox
+            self._rest_mouth_crop[state] = (mouth[y0:y1, x0:x1].copy(), bbox)
 
         self._eye_overlay: dict[int, np.ndarray] = {}
         self._eye_bbox: dict[int, tuple[int, int, int, int]] = {}
@@ -401,17 +464,24 @@ class PuppetRig:
         shape = (viseme or _STATE_VISEME.get(mouth_state, REST_VISEME)).upper()[:1]
         if shape not in self._head_stack:
             shape = REST_VISEME
-        head = self._head_stack[shape]
+        mix = float(np.clip(emotion_mix, 0.0, 1.0))
+        brow_state = emotion_brow_state(
+            emotion if mix >= 0.5 else previous_emotion
+        )
+        rest_state = emotion_rest_mouth_state(
+            emotion if mix >= 0.5 else previous_emotion
+        )
+        head = (
+            self._rest_head(rest_state)
+            if shape == REST_VISEME
+            else self._head_stack[shape]
+        )
         if eye_state in (1, 2):
             head = _alpha_composite_rgba(
                 head,
                 self._eye_overlay[eye_state],
                 self._eye_bbox[eye_state],
             )
-        mix = float(np.clip(emotion_mix, 0.0, 1.0))
-        brow_state = emotion_brow_state(
-            emotion if mix >= 0.5 else previous_emotion
-        )
         brow = self._brow_overlay(brow_state, brow_pulse_deg > 0.01)
         if brow is not None:
             head = _alpha_composite_crop(head, brow[0], brow[1])
@@ -461,8 +531,18 @@ class PuppetRig:
         if shape not in self._mouth_overlay:
             shape = REST_VISEME
         bbox = self._mouth_bbox[shape]
-        x0, y0, x1, y1 = bbox
-        return self._mouth_overlay[shape][y0:y1, x0:x1], bbox
+        return self._mouth_overlay[shape], bbox
+
+    def _rest_head(self, state: str) -> np.ndarray:
+        if state == "neutral":
+            return self._head_stack[REST_VISEME]
+        cached = self._rest_head_cache.get(state)
+        if cached is not None:
+            return cached
+        crop, bbox = self._rest_mouth_crop[state]
+        head = _alpha_composite_crop(self._bare_head, crop, bbox)
+        self._rest_head_cache[state] = head
+        return head
 
     def eye_overlay(
         self,
@@ -501,15 +581,13 @@ class PuppetRig:
 
         gemini = "gemini" in self.skin.character_id.lower()
         outline = (21, 32, 38, 255) if gemini else (43, 26, 21, 255)
-        metal = (83, 105, 112, 245) if gemini else (157, 96, 54, 245)
-        highlight = (151, 174, 180, 210) if gemini else (226, 154, 93, 210)
         layer = Image.new("RGBA", self.canvas_size, (0, 0, 0, 0))
         for index, (x0, y0, x1, y1) in enumerate(self._eye_bboxes[:2]):
             eye_w = x1 - x0
-            plate_w = max(58, int(round(eye_w * 0.80)))
-            plate_h = 18
+            plate_w = max(58, int(round(eye_w * 0.78)))
+            plate_h = 26
             scale = 4
-            pad = 24
+            pad = 36
             patch = Image.new(
                 "RGBA",
                 ((plate_w + pad * 2) * scale, (plate_h + pad * 2) * scale),
@@ -518,65 +596,38 @@ class PuppetRig:
             draw = ImageDraw.Draw(patch, "RGBA")
             left = float(pad * scale)
             right = float((pad + plate_w) * scale)
-            middle = (left + right) * 0.5
             center = float((pad + plate_h // 2) * scale)
             inner_is_right = index == 0
 
-            outer_y = center
-            mid_y = center - 2 * scale
-            inner_y = center
-            thickness = 7 * scale
-            vertical_shift = 0
+            angle_deg = 0.0
             if brow_state == "skeptical":
-                if index == 0:
-                    outer_y -= 10 * scale
-                    mid_y -= 7 * scale
-                    inner_y -= 2 * scale
-                else:
-                    mid_y -= 1 * scale
+                angle_deg = -9.0 if index == 0 else 0.0
             elif brow_state == "inquisitor":
-                inner_y += (15 + (3 if emphasized else 0)) * scale
-                mid_y += 7 * scale
-                thickness += 2 * scale
+                angle_deg = 18.0 + (2.0 if emphasized else 0.0)
             elif brow_state == "resolute":
-                inner_y += (8 + (2 if emphasized else 0)) * scale
-                mid_y += 5 * scale
-                vertical_shift = 7 * scale
-                thickness += 3 * scale
+                angle_deg = 3.0 + (1.0 if emphasized else 0.0)
             elif brow_state == "conceded":
-                outer_y += 3 * scale
-                mid_y -= 7 * scale
-                inner_y += 2 * scale
-                thickness -= 1 * scale
-            elif emphasized:
-                thickness += 1 * scale
+                angle_deg = -18.0 - (2.0 if emphasized else 0.0)
 
+            delta_y = np.tan(np.deg2rad(abs(angle_deg))) * plate_w * scale
+            inner_y = center + (delta_y if angle_deg > 0 else -delta_y)
+            outer_point = (left, center)
+            inner_point = (right, inner_y)
             if not inner_is_right:
-                outer_y, inner_y = inner_y, outer_y
-            top = [
-                (left, outer_y + vertical_shift),
-                (middle, mid_y + vertical_shift),
-                (right, inner_y + vertical_shift),
-            ]
-            bottom = [
-                (right, inner_y + vertical_shift + thickness),
-                (middle, mid_y + vertical_shift + thickness * 0.72),
-                (left, outer_y + vertical_shift + thickness * 0.55),
-            ]
-            points = top + bottom
-            draw.polygon(points, fill=metal)
+                outer_point = (right, center)
+                inner_point = (left, inner_y)
+            ink_width = 8 * scale
             draw.line(
-                points + [points[0]],
+                [outer_point, inner_point],
                 fill=outline,
-                width=3 * scale,
-                joint="curve",
+                width=ink_width,
             )
-            draw.line(
-                top,
-                fill=highlight,
-                width=max(2, scale),
-                joint="curve",
-            )
+            radius = ink_width // 2
+            for px, py in (outer_point, inner_point):
+                draw.ellipse(
+                    [px - radius, py - radius, px + radius, py + radius],
+                    fill=outline,
+                )
             patch = patch.resize(
                 (plate_w + pad * 2, plate_h + pad * 2),
                 Image.Resampling.LANCZOS,
@@ -618,7 +669,12 @@ class PuppetRig:
             self._articulated_head_cache.move_to_end(cache_key)
             return cached
 
-        head = self._head_stack[shape]
+        rest_state = emotion_rest_mouth_state(brow_state)
+        head = (
+            self._rest_head(rest_state)
+            if shape == REST_VISEME
+            else self._head_stack[shape]
+        )
         if eye_state in (1, 2):
             head = _alpha_composite_rgba(
                 head,
@@ -829,8 +885,12 @@ __all__ = [
     "LAYER_KEYS",
     "PuppetRig",
     "PuppetSkin",
+    "REST_MOUTH_LAYER_KEYS",
+    "REST_MOUTH_STATES",
     "VISEME_LAYER_KEYS",
     "emotion_brow_angles",
     "emotion_brow_state",
+    "emotion_rest_mouth_state",
+    "rest_mouth_layer_key",
     "viseme_layer_key",
 ]

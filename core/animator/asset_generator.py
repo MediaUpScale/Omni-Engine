@@ -31,7 +31,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from .puppet import ALL_LAYER_KEYS, LAYER_KEYS, PuppetSkin, viseme_layer_key
+from .puppet import (
+    ALL_LAYER_KEYS,
+    LAYER_KEYS,
+    REST_MOUTH_STATES,
+    PuppetSkin,
+    rest_mouth_layer_key,
+    viseme_layer_key,
+)
 from .types import VISEMES
 
 _LOG = logging.getLogger("animator.asset_generator")
@@ -67,7 +74,7 @@ CANVAS_SIZE = (480, 760)
 V2_CANVAS_SIZE = (720, 1080)
 SHARED_BACKGROUND_DIRNAME = "shared_backgrounds"
 SHARED_PANORAMA_FILENAME = "aiwake_arena_panorama_v2.png"
-ARTIST_ASSET_REVISION = 5
+ARTIST_ASSET_REVISION = 10
 _ANCHORS = {
     "head_pivot": [240, 250],
     "neck_pivot": [240, 370],
@@ -680,7 +687,12 @@ _VISEME_SHAPE: dict[str, tuple[float, float]] = {
 _MOUTH_MAX_HALF_W = 48
 _MOUTH_MAX_HALF_H = 30
 
-def _draw_viseme(viseme: str, palette: dict) -> Image.Image:
+def _draw_viseme(
+    viseme: str,
+    palette: dict,
+    *,
+    rest_state: str = "neutral",
+) -> Image.Image:
     """Draw one articulated cybernetic mouth overlay."""
     img = _blank()
     draw = ImageDraw.Draw(img, "RGBA")
@@ -716,8 +728,49 @@ def _draw_viseme(viseme: str, palette: dict) -> Image.Image:
     if viseme in {"A", "X"}:
         # Closed horizontal seam; X is dimmer rest, A is a firm bilabial.
         alpha = 150 if viseme == "X" else 245
-        draw.line([(mx - half_w, my), (mx + half_w, my)], fill=(*accent, alpha), width=lip_width)
-        draw.line([(mx - half_w + 5, my + 3), (mx + half_w - 5, my + 3)], fill=(*shell_dark, 220), width=2)
+        if viseme == "X" and rest_state == "smug_smile":
+            smile = [
+                (mx - half_w, my - 8),
+                (mx + half_w, my - 8),
+                (mx + int(half_w * 0.72), my + 16),
+                (mx - int(half_w * 0.72), my + 16),
+            ]
+            draw.polygon(smile, fill=cavity_fill, outline=(*shell_dark, 255))
+            draw.rounded_rectangle(
+                [mx - half_w + 5, my - 5, mx + half_w - 5, my + 3],
+                radius=3,
+                fill=teeth,
+            )
+            for tx in range(mx - half_w + 14, mx + half_w - 5, 13):
+                draw.line([(tx, my - 5), (tx, my + 3)], fill=(*shell_dark, 220), width=1)
+        elif viseme == "X" and rest_state == "stressed_grimace":
+            bounds = [mx - half_w, my - 9, mx + half_w, my + 9]
+            draw.rounded_rectangle(
+                bounds,
+                radius=7,
+                fill=cavity_fill,
+                outline=(*shell_dark, 255),
+                width=lip_width,
+            )
+            draw.rounded_rectangle(
+                [mx - half_w + 4, my - 6, mx + half_w - 4, my + 6],
+                radius=4,
+                fill=teeth,
+            )
+            draw.line(
+                [(mx - half_w + 4, my), (mx + half_w - 4, my)],
+                fill=(*shell_dark, 255),
+                width=2,
+            )
+            for tx in range(mx - half_w + 13, mx + half_w - 4, 12):
+                draw.line(
+                    [(tx, my - 6), (tx, my + 6)],
+                    fill=(*shell_dark, 220),
+                    width=1,
+                )
+        else:
+            draw.line([(mx - half_w, my), (mx + half_w, my)], fill=(*accent, alpha), width=lip_width)
+            draw.line([(mx - half_w + 5, my + 3), (mx + half_w - 5, my + 3)], fill=(*shell_dark, 220), width=2)
     elif viseme == "B":
         # Narrow consonant aperture with a continuous teeth line.
         draw.rounded_rectangle(cavity, radius=half_h, fill=cavity_fill, outline=(*accent, 240), width=lip_width)
@@ -947,6 +1000,8 @@ def _draw_ghibli_mouth_patch(
     *,
     plate_width: int,
     plate_height: int,
+    rest_state: str = "neutral",
+    organic: bool = False,
     outline: tuple[int, int, int, int] = _GHIBLI_OUTLINE,
     cavity: tuple[int, int, int, int] = _GHIBLI_CAVITY,
     teeth: tuple[int, int, int, int] = _GHIBLI_TEETH,
@@ -970,17 +1025,111 @@ def _draw_ghibli_mouth_patch(
     def ellipse_outline(bounds, *, fill, width=outline_w) -> None:
         draw.ellipse(bounds, fill=fill, outline=outline, width=width)
 
+    def cubic_points(
+        start: tuple[float, float],
+        control1: tuple[float, float],
+        control2: tuple[float, float],
+        end: tuple[float, float],
+    ) -> list[tuple[float, float]]:
+        points: list[tuple[float, float]] = []
+        for step in range(25):
+            u = step / 24.0
+            inv = 1.0 - u
+            points.append(
+                (
+                    (inv ** 3) * start[0]
+                    + 3 * (inv ** 2) * u * control1[0]
+                    + 3 * inv * (u ** 2) * control2[0]
+                    + (u ** 3) * end[0],
+                    (inv ** 3) * start[1]
+                    + 3 * (inv ** 2) * u * control1[1]
+                    + 3 * inv * (u ** 2) * control2[1]
+                    + (u ** 3) * end[1],
+                )
+            )
+        return points
+
     max_w = patch_w * 0.73
     if viseme in {"A", "X"}:
         seam_w = max_w * (0.72 if viseme == "A" else 0.58)
         y = cy + (2 * scale if viseme == "A" else 0)
-        draw.arc(
-            box(seam_w, 22),
-            8,
-            172,
-            fill=outline,
-            width=outline_w,
-        )
+        if viseme == "X" and rest_state == "smug_smile":
+            half = seam_w * scale * 0.50
+            smile = [
+                (cx - half, y - 16 * scale),
+                (cx + half, y - 16 * scale),
+                (cx + half * 0.60, y + 36 * scale),
+                (cx - half * 0.60, y + 36 * scale),
+            ]
+            draw.polygon(smile, fill=cavity)
+            draw.line(smile + [smile[0]], fill=outline, width=outline_w, joint="curve")
+            tooth_row = [
+                (cx - half + 7 * scale, y - 12 * scale),
+                (cx + half - 7 * scale, y - 12 * scale),
+                (cx + half * 0.82, y + 6 * scale),
+                (cx - half * 0.82, y + 6 * scale),
+            ]
+            draw.polygon(tooth_row, fill=teeth)
+            row_left = cx - half + 9 * scale
+            row_right = cx + half - 9 * scale
+            for tooth_index in range(1, 5):
+                tx = row_left + ((row_right - row_left) * tooth_index / 5.0)
+                draw.line(
+                    [(tx, y - 12 * scale), (tx, y + 6 * scale)],
+                    fill=outline,
+                    width=scale,
+                )
+        elif viseme == "X" and rest_state == "stressed_grimace":
+            half = seam_w * scale * 0.62
+            bounds = (
+                int(cx - half),
+                y - 13 * scale,
+                int(cx + half),
+                y + 13 * scale,
+            )
+            draw.rounded_rectangle(
+                bounds,
+                radius=10 * scale,
+                fill=cavity,
+                outline=outline,
+                width=outline_w,
+            )
+            inner = [
+                bounds[0] + 6 * scale,
+                bounds[1] + 5 * scale,
+                bounds[2] - 6 * scale,
+                bounds[3] - 5 * scale,
+            ]
+            draw.rounded_rectangle(inner, radius=5 * scale, fill=teeth)
+            draw.line(
+                [(inner[0], y), (inner[2], y)],
+                fill=outline,
+                width=2 * scale,
+            )
+            for tooth_index in range(1, 6):
+                tx = inner[0] + ((inner[2] - inner[0]) * tooth_index / 6.0)
+                draw.line(
+                    [(tx, inner[1]), (tx, inner[3])],
+                    fill=outline,
+                    width=scale,
+                )
+        elif viseme == "X" and organic:
+            half = seam_w * scale * 0.50
+            seam = cubic_points(
+                (cx - half, y + 2 * scale),
+                (cx - half * 0.45, y + 8 * scale),
+                (cx + half * 0.45, y + 8 * scale),
+                (cx + half, y - 2 * scale),
+            )
+            draw.line(seam, fill=outline, width=outline_w, joint="curve")
+        else:
+            draw.arc(
+                box(seam_w, 22),
+                8,
+                172,
+                fill=outline,
+                width=outline_w,
+            )
         if viseme == "A":
             draw.line(
                 [(cx - int(seam_w * scale * 0.35), y + 3 * scale),
@@ -990,26 +1139,38 @@ def _draw_ghibli_mouth_patch(
             )
     elif viseme == "B":
         bounds = box(max_w * 0.82, patch_h * 0.23)
-        draw.rounded_rectangle(
-            bounds,
-            radius=12 * scale,
-            fill=cavity,
-            outline=outline,
-            width=outline_w,
-        )
+        if organic:
+            ellipse_outline(bounds, fill=cavity)
+        else:
+            draw.rounded_rectangle(
+                bounds,
+                radius=12 * scale,
+                fill=cavity,
+                outline=outline,
+                width=outline_w,
+            )
         x0, y0, x1, y1 = bounds
         mid = (y0 + y1) // 2
-        draw.rounded_rectangle(
-            [x0 + 7 * scale, y0 + 5 * scale, x1 - 7 * scale, mid],
-            radius=3 * scale,
-            fill=teeth,
-        )
-        draw.rounded_rectangle(
-            [x0 + 10 * scale, mid + scale, x1 - 10 * scale, y1 - 5 * scale],
-            radius=3 * scale,
-            fill=teeth,
-        )
-        draw.line([(x0 + 8 * scale, mid), (x1 - 8 * scale, mid)], fill=outline, width=scale)
+        if organic:
+            draw.arc(
+                [x0 + 12 * scale, y0 + 5 * scale, x1 - 12 * scale, y1 - 3 * scale],
+                190,
+                350,
+                fill=teeth,
+                width=7 * scale,
+            )
+        else:
+            draw.rounded_rectangle(
+                [x0 + 7 * scale, y0 + 5 * scale, x1 - 7 * scale, mid],
+                radius=3 * scale,
+                fill=teeth,
+            )
+            draw.rounded_rectangle(
+                [x0 + 10 * scale, mid + scale, x1 - 10 * scale, y1 - 5 * scale],
+                radius=3 * scale,
+                fill=teeth,
+            )
+            draw.line([(x0 + 8 * scale, mid), (x1 - 8 * scale, mid)], fill=outline, width=scale)
     elif viseme == "C":
         bounds = box(max_w, patch_h * 0.50)
         ellipse_outline(bounds, fill=cavity)
@@ -1031,21 +1192,24 @@ def _draw_ghibli_mouth_patch(
         bounds = box(max_w * 0.78, patch_h * 0.86)
         x0, y0, x1, y1 = bounds
         inset = int(round((x1 - x0) * 0.10))
-        aperture = [
-            (x0 + inset, y0),
-            (x1 - inset, y0),
-            (x1, y1 - 8 * scale),
-            (x1 - 8 * scale, y1),
-            (x0 + 8 * scale, y1),
-            (x0, y1 - 8 * scale),
-        ]
-        draw.polygon(aperture, fill=cavity)
-        draw.line(
-            aperture + [aperture[0]],
-            fill=outline,
-            width=outline_w,
-            joint="curve",
-        )
+        if organic:
+            ellipse_outline(bounds, fill=cavity)
+        else:
+            aperture = [
+                (x0 + inset, y0),
+                (x1 - inset, y0),
+                (x1, y1 - 8 * scale),
+                (x1 - 8 * scale, y1),
+                (x0 + 8 * scale, y1),
+                (x0, y1 - 8 * scale),
+            ]
+            draw.polygon(aperture, fill=cavity)
+            draw.line(
+                aperture + [aperture[0]],
+                fill=outline,
+                width=outline_w,
+                joint="curve",
+            )
         draw.pieslice(
             [x0 + inset + 5 * scale, y0 + 5 * scale, x1 - inset - 5 * scale, y0 + 39 * scale],
             180,
@@ -1066,18 +1230,30 @@ def _draw_ghibli_mouth_patch(
         draw.ellipse(box(patch_h * 0.16, patch_h * 0.19), fill=cavity)
     elif viseme == "G":
         bounds = box(max_w * 0.82, patch_h * 0.38)
-        draw.rounded_rectangle(
-            bounds,
-            radius=18 * scale,
-            fill=cavity,
-            outline=outline,
-            width=outline_w,
-        )
+        if organic:
+            ellipse_outline(bounds, fill=cavity)
+        else:
+            draw.rounded_rectangle(
+                bounds,
+                radius=18 * scale,
+                fill=cavity,
+                outline=outline,
+                width=outline_w,
+            )
         x0, y0, x1, y1 = bounds
-        draw.rectangle(
-            [x0 + 8 * scale, y0 + 5 * scale, x1 - 8 * scale, cy + 2 * scale],
-            fill=teeth,
-        )
+        if organic:
+            draw.arc(
+                [x0 + 12 * scale, y0 + 5 * scale, x1 - 12 * scale, y1],
+                190,
+                350,
+                fill=teeth,
+                width=7 * scale,
+            )
+        else:
+            draw.rectangle(
+                [x0 + 8 * scale, y0 + 5 * scale, x1 - 8 * scale, cy + 2 * scale],
+                fill=teeth,
+            )
         draw.arc(
             [x0 + 12 * scale, cy - 2 * scale, x1 - 12 * scale, y1 + 7 * scale],
             0,
@@ -1199,6 +1375,22 @@ def generate_ghibli_llama_assets(puppet_dir: Path) -> dict[str, object]:
             ),
         )
         layer.save(mouths_dir / f"mouth_{viseme}.png")
+    for state in REST_MOUTH_STATES:
+        patch = _draw_ghibli_mouth_patch(
+            "X",
+            plate_width=plate_width,
+            plate_height=plate_height,
+            rest_state=state,
+        )
+        layer = Image.new("RGBA", head.size, (0, 0, 0, 0))
+        layer.alpha_composite(
+            patch,
+            (
+                mouth_anchor[0] - patch.width // 2,
+                mouth_anchor[1] - patch.height // 2,
+            ),
+        )
+        layer.save(mouths_dir / f"{rest_mouth_layer_key(state)}.png")
 
     eye_bboxes = ((330, 935, 540, 1175), (680, 905, 895, 1150))
     # The artist head already contains its optical sensors. Open is
@@ -1255,6 +1447,12 @@ def generate_ghibli_llama_assets(puppet_dir: Path) -> dict[str, object]:
         }
     )
     layers.update({f"mouth_{viseme}": f"mouths/mouth_{viseme}.png" for viseme in VISEMES})
+    layers.update(
+        {
+            rest_mouth_layer_key(state): f"mouths/{rest_mouth_layer_key(state)}.png"
+            for state in REST_MOUTH_STATES
+        }
+    )
     payload["layers"] = layers
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     _LOG.info(
@@ -1320,6 +1518,7 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
             viseme,
             plate_width=plate_bbox[2] - plate_bbox[0],
             plate_height=plate_bbox[3] - plate_bbox[1],
+            organic=True,
             **anime_palette,
         )
         patch = patch.rotate(-4.0, resample=Image.Resampling.BICUBIC, expand=False)
@@ -1335,6 +1534,28 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
             ),
         )
         layer.save(mouths_dir / f"mouth_{viseme}.png")
+    for state in REST_MOUTH_STATES:
+        patch = _draw_ghibli_mouth_patch(
+            "X",
+            plate_width=plate_bbox[2] - plate_bbox[0],
+            plate_height=plate_bbox[3] - plate_bbox[1],
+            rest_state=state,
+            organic=True,
+            **anime_palette,
+        )
+        patch = patch.rotate(-4.0, resample=Image.Resampling.BICUBIC, expand=False)
+        patch_pixels = np.asarray(patch, dtype=np.uint8).copy()
+        patch_pixels[patch_pixels[..., 3] < 8, :3] = 0
+        patch = Image.fromarray(patch_pixels)
+        layer = Image.new("RGBA", head.size, (0, 0, 0, 0))
+        layer.alpha_composite(
+            patch,
+            (
+                mouth_anchor[0] - patch.width // 2,
+                mouth_anchor[1] - patch.height // 2,
+            ),
+        )
+        layer.save(mouths_dir / f"{rest_mouth_layer_key(state)}.png")
 
     eye_bboxes = ((650, 1005, 810, 1180), (1020, 1040, 1135, 1190))
     # Optics are already finished in the artist head. Open is transparent;
@@ -1391,6 +1612,12 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
         }
     )
     layers.update({f"mouth_{viseme}": f"mouths/mouth_{viseme}.png" for viseme in VISEMES})
+    layers.update(
+        {
+            rest_mouth_layer_key(state): f"mouths/{rest_mouth_layer_key(state)}.png"
+            for state in REST_MOUTH_STATES
+        }
+    )
     payload["layers"] = layers
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     _LOG.info(
@@ -1426,6 +1653,10 @@ def generate_puppet_assets(skin: PuppetSkin, *, missing: list[str] | None = None
     }
     for viseme in VISEMES:
         generators[viseme_layer_key(viseme)] = lambda v=viseme: _draw_viseme(v, palette)
+    for state in REST_MOUTH_STATES:
+        generators[rest_mouth_layer_key(state)] = (
+            lambda s=state: _draw_viseme("X", palette, rest_state=s)
+        )
 
     # Match an existing external art canvas. Procedural functions draw on
     # the canonical 480x760 canvas, then scale only generated overlays to
@@ -1482,6 +1713,13 @@ def generate_default_puppet(
             mouths_ready = all(
                 (puppet_dir / "mouths" / f"mouth_{viseme}.png").is_file()
                 for viseme in VISEMES
+            ) and all(
+                (
+                    puppet_dir
+                    / "mouths"
+                    / f"{rest_mouth_layer_key(state)}.png"
+                ).is_file()
+                for state in REST_MOUTH_STATES
             )
             if (
                 payload.get("asset_profile") != expected_profile

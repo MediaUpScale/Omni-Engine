@@ -72,9 +72,9 @@ def word_timings(turns: Iterable[DialogueTurn]) -> list[WordTiming]:
             continue
         weights = [len(w) + 2.0 for w in words]
         total = sum(weights)
-        cursor = turn.start_time
+        cursor = turn.speech_start
         for word, weight in zip(words, weights):
-            span = turn.duration * (weight / total)
+            span = turn.spoken_duration * (weight / total)
             timings.append(
                 WordTiming(word=word, start_time=cursor, end_time=cursor + span, speaker=turn.speaker)
             )

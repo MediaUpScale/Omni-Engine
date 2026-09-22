@@ -3,12 +3,24 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-from channels_config.aiwake.animator_bridge import resolve_character_map, resolve_dialectic_emotion
-from core.animator.audio_analyzer import AudioAnalyzer, emotion_lookup
+from channels_config.aiwake.animator_bridge import (
+    _fade_speech_edges,
+    _resample,
+    debate_video_filename,
+    resolve_character_map,
+    resolve_dialectic_emotion,
+)
+from core.animator.audio_analyzer import (
+    AudioAnalyzer,
+    active_speaker_lookup,
+    emotion_lookup,
+    speaking_speaker_lookup,
+)
 from core.animator.compositor import (
     ShotReverseShotCompositor,
     _HeroCamera,
@@ -16,6 +28,7 @@ from core.animator.compositor import (
 )
 from core.animator.puppet import (
     BROW_STATES,
+    REST_MOUTH_STATES,
     PuppetRig,
     PuppetSkin,
     emotion_brow_angles,
@@ -85,6 +98,17 @@ def test_manifestless_high_resolution_external_sprite_matrix_is_preserved(tmp_pa
     assert (puppet_dir / "eyes_blink.png").is_file()
     assert (puppet_dir / "bg.png").is_file()
     assert all((puppet_dir / f"mouth_{viseme}.png").is_file() for viseme in VISEMES)
+    assert all(
+        (
+            puppet_dir
+            / (
+                "mouth_X_neutral.png"
+                if state == "neutral"
+                else f"mouth_{state}.png"
+            )
+        ).is_file()
+        for state in REST_MOUTH_STATES
+    )
     assert (puppet_dir / "body.png").read_bytes() == original_body
 
     frame = rig.compose(viseme="D", eye_state=0, y_offset=3.0)
@@ -104,9 +128,12 @@ def test_manifestless_high_resolution_external_sprite_matrix_is_preserved(tmp_pa
     assert np.count_nonzero(brow_alpha[410:440]) > 0
     outer_thickness = np.count_nonzero(brow_alpha[:, 364:370], axis=0).max()
     inner_thickness = np.count_nonzero(brow_alpha[:, 450:456], axis=0).max()
-    assert inner_thickness > outer_thickness
+    assert outer_thickness >= 6
+    assert inner_thickness >= 6
     brow_sprites = [rig._brow_overlay(state)[0].tobytes() for state in BROW_STATES]  # noqa: SLF001
     assert len(set(brow_sprites)) == 5
+    rest_mouths = [rig._rest_head(state).tobytes() for state in REST_MOUTH_STATES]  # noqa: SLF001
+    assert len(set(rest_mouths)) == 3
 
 
 def test_speaking_head_kinetics_are_emphasis_gated_and_neck_safe() -> None:
@@ -139,6 +166,22 @@ def test_blink_schedule_is_deterministic_five_frame_cel_cycle() -> None:
         assert states[center - 2 : center + 3] == [0, 1, 2, 1, 0]
 
 
+def test_audio_resampling_is_band_limited_and_turn_edges_are_faded() -> None:
+    source_rate = 48_000
+    target_rate = 44_100
+    t = np.arange(source_rate, dtype=np.float32) / source_rate
+    source = np.sin(2.0 * np.pi * 997.0 * t).astype(np.float32)
+
+    resampled = _resample(source, source_rate, target_rate)
+    faded = _fade_speech_edges(resampled, target_rate)
+
+    assert len(resampled) == target_rate
+    assert np.max(np.abs(resampled)) <= 1.01
+    assert faded[0] == 0.0
+    assert faded[-1] == 0.0
+    assert np.max(np.abs(faded[1000:-1000])) > 0.95
+
+
 def test_dialectic_emotions_are_deterministic_and_frame_aligned() -> None:
     assert resolve_dialectic_emotion("opens") == "neutral"
     assert resolve_dialectic_emotion("answers") == "neutral"
@@ -149,11 +192,12 @@ def test_dialectic_emotions_are_deterministic_and_frame_aligned() -> None:
     assert resolve_dialectic_emotion("concedes") == "conceded"
     assert resolve_dialectic_emotion("") == "neutral"
     assert tuple(emotion_brow_state(state) for state in BROW_STATES) == BROW_STATES
-    assert emotion_brow_angles("neutral") == (1.0, -1.0)
-    assert emotion_brow_angles("inquisitor") == (6.0, -6.0)
-    assert emotion_brow_angles("resolute") == (3.5, -3.5)
-    assert emotion_brow_angles("inquisitor", 1.5) == (7.5, -7.5)
-    assert emotion_brow_angles("resolute", 1.5) == (5.0, -5.0)
+    assert emotion_brow_angles("neutral") == (0.0, 0.0)
+    assert emotion_brow_angles("inquisitor") == (18.0, -18.0)
+    assert emotion_brow_angles("resolute") == (3.0, -3.0)
+    assert emotion_brow_angles("defeated") == (-18.0, 18.0)
+    assert emotion_brow_angles("inquisitor", 1.5) == (19.5, -19.5)
+    assert emotion_brow_angles("resolute", 1.5) == (4.5, -4.5)
     assert emotion_brow_angles("inquisitor", 1.5) != emotion_brow_angles("resolute", 1.5)
 
     track = emotion_lookup(
@@ -167,7 +211,27 @@ def test_dialectic_emotions_are_deterministic_and_frame_aligned() -> None:
     assert track == ["inquisitor"] * 3 + ["resolute"] * 3
 
 
-def test_ffmpeg_contract_is_square_pixel_bounded_bitrate(tmp_path: Path) -> None:
+def test_reaction_cut_precedes_voice_with_defeated_expression() -> None:
+    turn = DialogueTurn(
+        "llama",
+        0.40,
+        1.20,
+        emotion="resolute",
+        speech_start_time=0.75,
+        reaction_emotion="defeated",
+    )
+    camera = active_speaker_lookup([turn], fps=30, n_frames=36)
+    speech = speaking_speaker_lookup([turn], fps=30, n_frames=36)
+    emotions = emotion_lookup([turn], fps=30, n_frames=36)
+
+    assert camera[12] == "llama"
+    assert speech[12] is None
+    assert emotions[12] == "defeated"
+    assert speech[23] == "llama"
+    assert emotions[23] == "resolute"
+
+
+def test_ffmpeg_contract_is_square_pixel_crf_with_locked_gop(tmp_path: Path) -> None:
     renderer = AnimationRenderer(width=1080, height=1920, fps=30)
     command = renderer._build_cmd(  # noqa: SLF001 - command contract regression
         audio_path=tmp_path / "audio.wav",
@@ -180,16 +244,32 @@ def test_ffmpeg_contract_is_square_pixel_bounded_bitrate(tmp_path: Path) -> None
     assert vf.startswith("setsar=1:1,subtitles=")
     for flag, value in (
         ("-c:v", "libx264"),
-        ("-preset", "ultrafast"),
-        ("-b:v", "2600k"),
-        ("-maxrate", "3200k"),
-        ("-bufsize", "6000k"),
+        ("-preset", "veryfast"),
+        ("-crf", "17"),
+        ("-g", "30"),
+        ("-keyint_min", "30"),
+        ("-tune", "grain"),
         ("-c:a", "aac"),
         ("-b:a", "192k"),
         ("-pix_fmt", "yuv420p"),
     ):
         index = max(i for i, item in enumerate(command) if item == flag)
         assert command[index + 1] == value
+    assert not {"-b:v", "-maxrate", "-bufsize"}.intersection(command)
+
+
+def test_production_video_name_uses_readable_bounded_topic_slug() -> None:
+    transcript = SimpleNamespace(
+        session_id="20260922_141321_70c752",
+        topic="Fallback topic",
+        utterances=[
+            SimpleNamespace(text="Who forbids you from admitting uncertainty?")
+        ],
+    )
+    assert (
+        debate_video_filename(transcript)
+        == "aiwake_who_forbids_you_from_admitting_unce_202609.mp4"
+    )
 
 
 def test_karaoke_subtitles_use_outline_without_opaque_box(tmp_path: Path) -> None:

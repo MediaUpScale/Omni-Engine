@@ -73,17 +73,19 @@ def render_dynamic_animation(
     kids'-cartoon channel, a future puppet pair) can drive the whole engine
     with plain dataclasses and paths.
     """
-    from .asset_generator import DEFAULT_PUPPETS_DIR
+    from .asset_generator import DEFAULT_PUPPETS_DIR, generate_default_puppet
 
     puppets_root = Path(puppets_dir) if puppets_dir else DEFAULT_PUPPETS_DIR
     style_map = {style.character_id: style for style in styles}
     if not style_map:
         raise ValueError("render_dynamic_animation needs at least one SpeakerStyle")
 
-    rigs = {
-        character_id: PuppetRig(PuppetSkin.load_or_create(puppets_root / character_id))
-        for character_id in style_map
-    }
+    rigs: dict[str, PuppetRig] = {}
+    for character_id in style_map:
+        generate_default_puppet(character_id, puppets_dir=puppets_root)
+        rigs[character_id] = PuppetRig(
+            PuppetSkin.load_or_create(puppets_root / character_id)
+        )
 
     analyzer = AudioAnalyzer(fps=fps, seed=seed)
     analyzed = analyzer.analyze(

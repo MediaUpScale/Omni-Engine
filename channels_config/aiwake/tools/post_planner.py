@@ -1158,7 +1158,7 @@ def scan_root_production_videos(
         return []
     found: list[Path] = []
     candidates = list(root.glob("*.mp4"))
-    candidates.extend((root / "animation_clips").glob("aiwake_battle_*.mp4"))
+    candidates.extend((root / "animation_clips").glob("aiwake_*.mp4"))
     for path in sorted(candidates):
         if not path.is_file():
             continue

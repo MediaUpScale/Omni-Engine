@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
+import wave
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,6 +38,7 @@ if TYPE_CHECKING:  # pragma: no cover — type-only import, avoids a hard runtim
     from .media.audio import AudioAsset
 
 _LOG = logging.getLogger("aiwake.animator_bridge")
+_SLUG_MAX_CHARS = 35
 
 DEFAULT_SKIN_PRESET = "v2"
 SKIN_PRESETS: dict[str, dict[str, str]] = {
@@ -48,6 +52,24 @@ SKIN_PRESETS: dict[str, dict[str, str]] = {
     },
 }
 DEFAULT_CHARACTER_MAP: dict[str, str] = dict(SKIN_PRESETS[DEFAULT_SKIN_PRESET])
+
+
+def debate_topic_slug(transcript: "DebateTranscript") -> str:
+    """Return a stable, readable filename slug for one debate."""
+    utterances = list(transcript.utterances)
+    opening = str(utterances[0].text if utterances else "").strip()
+    source = opening or str(transcript.topic or "").strip() or "debate"
+    ascii_text = unicodedata.normalize("NFKD", source).encode(
+        "ascii", "ignore"
+    ).decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")
+    slug = slug[:_SLUG_MAX_CHARS].rstrip("_")
+    return slug or "debate"
+
+
+def debate_video_filename(transcript: "DebateTranscript") -> str:
+    session_suffix = re.sub(r"[^a-zA-Z0-9]+", "", transcript.session_id)[:6]
+    return f"aiwake_{debate_topic_slug(transcript)}_{session_suffix or 'session'}.mp4"
 
 # Seat presentation: the HUD nameplate, its accent colour, and which way the
 # hero is angled when that seat holds the camera. The orchestrator sits on
@@ -115,6 +137,18 @@ def build_speaker_styles(
     return styles
 
 _TURN_GAP_S = 0.4
+_DRAMATIC_TURN_GAP_S = 0.75
+_REACTION_LEAD_S = 0.35
+
+
+def _write_pcm16_wave(destination: Path, samples: np.ndarray, sample_rate: int) -> None:
+    """Write mono PCM16 WAV without making soundfile a pipeline dependency."""
+    pcm = np.rint(np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+    with wave.open(str(destination), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(pcm.tobytes())
 _MERGE_SAMPLE_RATE = 44100
 
 # Target peak amplitude (linear, 0..1) for the merged session track. Keeps
@@ -197,13 +231,56 @@ def _turn_intent(
 
 
 def _resample(samples: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
+    """Band-limited Lanczos resampling without an optional SciPy dependency."""
     if sr == target_sr or samples.size == 0:
         return samples.astype(np.float32)
     duration = samples.size / float(sr)
     n_target = max(1, int(round(duration * target_sr)))
-    old_x = np.linspace(0.0, duration, num=samples.size, endpoint=False)
-    new_x = np.linspace(0.0, duration, num=n_target, endpoint=False)
-    return np.interp(new_x, old_x, samples).astype(np.float32)
+    source = np.asarray(samples, dtype=np.float64)
+    radius = 16
+    taps = np.arange(-radius + 1, radius + 1, dtype=np.int64)
+    cutoff = min(1.0, target_sr / float(sr))
+    output = np.empty(n_target, dtype=np.float32)
+    chunk_size = 8192
+    for chunk_start in range(0, n_target, chunk_size):
+        chunk_end = min(n_target, chunk_start + chunk_size)
+        positions = np.arange(chunk_start, chunk_end, dtype=np.float64) * (
+            sr / float(target_sr)
+        )
+        centers = np.floor(positions).astype(np.int64)
+        indices = centers[:, None] + taps[None, :]
+        distances = positions[:, None] - indices
+        valid = (indices >= 0) & (indices < source.size)
+        clipped = np.clip(indices, 0, source.size - 1)
+        kernel = (
+            cutoff
+            * np.sinc(distances * cutoff)
+            * np.sinc(distances / float(radius))
+            * valid
+        )
+        weight = np.sum(kernel, axis=1)
+        weight[np.abs(weight) < 1e-12] = 1.0
+        output[chunk_start:chunk_end] = (
+            np.sum(source[clipped] * kernel, axis=1) / weight
+        ).astype(np.float32)
+    return output
+
+
+def _fade_speech_edges(
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    fade_s: float = 0.015,
+) -> np.ndarray:
+    """Apply click-free linear ramps while retaining the utterance duration."""
+    faded = np.asarray(samples, dtype=np.float32).copy()
+    fade_samples = min(int(round(fade_s * sample_rate)), faded.size // 2)
+    if fade_samples <= 0:
+        return faded
+    ramp = np.linspace(0.0, 1.0, fade_samples, endpoint=True, dtype=np.float32)
+    faded[:fade_samples] *= ramp
+    faded[-fade_samples:] *= ramp[::-1]
+    return faded
 
 
 def _estimate_duration_for(text: str) -> float:
@@ -325,14 +402,13 @@ def build_session_audio(
     truncation from an unspecified/mismatched subtype is what turns a
     perfectly good waveform into "broken"-sounding audio after muxing.
     """
-    import soundfile as sf
-
     seats = character_map or DEFAULT_CHARACTER_MAP
     audio_by_turn = audio_by_turn or {}
     segments: list[np.ndarray] = []
     turns: list[DialogueTurn] = []
     cursor = 0.0
     role_occurrences: dict[str, int] = {}
+    prior_intent = ""
 
     # Per-turn WAVs for the phonetic lip-sync analyser. Rhubarb reads WAV
     # (not the MP3 Edge-TTS hands back), and works per-utterance, so each
@@ -361,9 +437,10 @@ def build_session_audio(
 
         turn_wav: Path | None = None
         if np.any(samples):
+            samples = _fade_speech_edges(samples, sample_rate)
             turn_wav = turn_wav_dir / f"turn_{utterance.turn_index:02d}.wav"
             try:
-                sf.write(str(turn_wav), np.clip(samples, -1.0, 1.0), sample_rate, subtype="PCM_16")
+                _write_pcm16_wave(turn_wav, samples, sample_rate)
             except Exception as exc:  # noqa: BLE001 — lip-sync input is best-effort
                 _LOG.debug("could not export turn %d wav (%s)", utterance.turn_index, exc)
                 turn_wav = None
@@ -376,22 +453,50 @@ def build_session_audio(
             role_occurrence=role_occurrence,
         )
         role_occurrences[utterance.role.value] = role_occurrence + 1
+        prior_words = (
+            str(prior_intent or "")
+            .strip()
+            .lower()
+            .split(":", 1)[0]
+            .split(maxsplit=1)
+        )
+        prior_token = prior_words[0] if prior_words else ""
+        emotion = resolve_dialectic_emotion(intent)
+        dramatic_reaction = (
+            bool(turns)
+            and utterance.role.value == "target"
+            and (emotion == "conceded" or prior_token == "presses")
+        )
+        if turns:
+            transition_gap = _DRAMATIC_TURN_GAP_S if dramatic_reaction else gap_s
+            if transition_gap > 0:
+                segments.append(
+                    np.zeros(int(transition_gap * sample_rate), dtype=np.float32)
+                )
+                cursor += transition_gap
+        speech_start = cursor
+        camera_start = (
+            max(0.0, speech_start - _REACTION_LEAD_S)
+            if dramatic_reaction
+            else speech_start
+        )
         turns.append(
             DialogueTurn(
                 speaker=speaker_id,
-                start_time=cursor,
-                end_time=cursor + duration,
+                start_time=camera_start,
+                end_time=speech_start + duration,
                 text=utterance.text,
                 audio_path=str(turn_wav) if turn_wav else None,
-                emotion=resolve_dialectic_emotion(intent),
+                emotion=emotion,
+                speech_start_time=speech_start,
+                reaction_emotion=(
+                    "conceded" if emotion == "conceded" else "defeated"
+                ) if dramatic_reaction else emotion,
             )
         )
         segments.append(samples)
-        cursor += duration
-
-        if gap_s > 0:
-            segments.append(np.zeros(int(gap_s * sample_rate), dtype=np.float32))
-            cursor += gap_s
+        cursor = speech_start + duration
+        prior_intent = intent
 
     if not segments:
         raise ValueError("transcript has no utterances — nothing to animate")
@@ -406,10 +511,7 @@ def build_session_audio(
     )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    # Explicit PCM_16 subtype: guarantees a widely-compatible, correctly
-    # bit-depth-quantized WAV every time, regardless of soundfile's
-    # extension-inferred default for a float32 ndarray.
-    sf.write(str(destination), merged, sample_rate, subtype="PCM_16")
+    _write_pcm16_wave(destination, merged, sample_rate)
     return destination, turns, cursor
 
 
@@ -460,8 +562,9 @@ def render_debate_animation(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    video_filename = debate_video_filename(transcript)
     merged_audio_path = output_dir / f"{transcript.session_id}_battle_audio.wav"
-    video_path = output_dir / f"aiwake_battle_{transcript.session_id}.mp4"
+    video_path = output_dir / video_filename
 
     _, turns, total_duration = build_session_audio(
         transcript,

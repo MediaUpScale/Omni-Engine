@@ -203,13 +203,16 @@ class ShotReverseShotCompositor:
     # -- Frame loop ------------------------------------------------------- #
     def iter_frames(self, analyzed: AnalyzedAudio) -> Iterator[np.ndarray]:
         """Yield RGB24 frames (H, W, 3) uint8, ready for the ffmpeg pipe."""
-        speakers: Sequence[str | None] = analyzed.active_speaker
+        camera_speakers: Sequence[str | None] = analyzed.active_speaker
+        speech_speakers: Sequence[str | None] = (
+            analyzed.speaking_speaker or analyzed.active_speaker
+        )
         emphasis_thresholds: dict[str, float] = {}
         brow_thresholds: dict[str, float] = {}
         for speaker_id in self.rigs:
             levels = [
                 float(level)
-                for level, speaker in zip(analyzed.rms, speakers)
+                for level, speaker in zip(analyzed.rms, speech_speakers)
                 if speaker == speaker_id and float(level) > 0.0
             ]
             emphasis_thresholds[speaker_id] = (
@@ -218,14 +221,19 @@ class ShotReverseShotCompositor:
             brow_thresholds[speaker_id] = (
                 float(np.percentile(levels, 80)) if levels else 1.0
             )
-        current = next((s for s in speakers if s in self.rigs), None) or next(iter(self.rigs))
+        current = next((s for s in camera_speakers if s in self.rigs), None) or next(iter(self.rigs))
         for index in range(analyzed.n_frames):
             t = analyzed.frame_time(index)
-            speaking = speakers[index] if index < len(speakers) else None
-            if speaking in self.rigs:
+            camera_speaker = (
+                camera_speakers[index] if index < len(camera_speakers) else None
+            )
+            speaking = (
+                speech_speakers[index] if index < len(speech_speakers) else None
+            )
+            if camera_speaker in self.rigs:
                 # Hard cut: hero and camera angle switch together
                 # on this exact frame — no cross-fade, no interpolation.
-                current = speaking
+                current = camera_speaker
             is_speaking = speaking == current
 
             active_rms = float(_sequence_at(analyzed.rms, index, 0.0))

@@ -1,21 +1,24 @@
 # -*- coding: utf-8 -*-
 """Zero-disk high-speed FFmpeg pipe.
 
-Streams raw RGB24 frames straight from RAM into an ``ffmpeg`` subprocess via
-stdin — no per-frame PNGs ever touch the disk. Uses a bounded-bitrate
-``libx264 -preset ultrafast`` broadcast contract. Muxes the dialogue
+Converts frames to compact YUV420 in RAM and streams them into ``ffmpeg`` via
+stdin — no per-frame PNGs ever touch the disk. Uses a CRF-quality
+``libx264 -preset veryfast`` contract with one-second locked GOPs. Muxes the dialogue
 audio track as normalized-rate AAC
 (``-c:a aac -b:a 192k -ar 44100 -map 0:v -map 1:a -shortest``).
 """
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import cv2
 import numpy as np
 
 _LOG = logging.getLogger("animator.renderer")
@@ -129,7 +132,7 @@ class RenderStats:
 
 
 class AnimationRenderer:
-    """Pipes RGB24 frames into ffmpeg and muxes the dialogue audio track."""
+    """Pipes compact YUV420 frames into ffmpeg and muxes dialogue audio."""
 
     def __init__(self, *, width: int = 1080, height: int = 1920, fps: int = 30) -> None:
         self.width = width
@@ -143,13 +146,17 @@ class AnimationRenderer:
             "-c:v",
             "libx264",
             "-preset",
-            "ultrafast",
-            "-b:v",
-            "2600k",
-            "-maxrate",
-            "3200k",
-            "-bufsize",
-            "6000k",
+            "veryfast",
+            "-crf",
+            "17",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-tune",
+            "grain",
         ]
 
     def render(
@@ -165,13 +172,16 @@ class AnimationRenderer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         use_gpu = False
-        frames_written, encoder_used, elapsed = self._run_ffmpeg(
-            frame_iter,
-            audio_path=audio_path,
-            output_path=output_path,
-            use_gpu=use_gpu,
-            subtitles_path=Path(subtitles_path) if subtitles_path else None,
-        )
+        with tempfile.TemporaryDirectory(prefix="aiwake_render_") as temp_dir:
+            encoded_path = Path(temp_dir) / output_path.name
+            frames_written, encoder_used, elapsed = self._run_ffmpeg(
+                frame_iter,
+                audio_path=audio_path,
+                output_path=encoded_path,
+                use_gpu=use_gpu,
+                subtitles_path=Path(subtitles_path) if subtitles_path else None,
+            )
+            shutil.copyfile(encoded_path, output_path)
 
         size = output_path.stat().st_size if output_path.is_file() else 0
         stats = RenderStats(
@@ -213,7 +223,7 @@ class AnimationRenderer:
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "rgb24",
+            "yuv420p",
             "-s",
             f"{self.width}x{self.height}",
             "-r",
@@ -303,21 +313,24 @@ class AnimationRenderer:
         )
         assert proc.stdin is not None
         frames_written = 0
-        consumed: list[np.ndarray] = []
         try:
             for frame in frame_iter:
-                consumed.append(frame)
-                proc.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
+                rgb = np.ascontiguousarray(frame, dtype=np.uint8)
+                yuv420 = cv2.cvtColor(rgb, cv2.COLOR_RGB2YUV_I420)
+                proc.stdin.write(yuv420.tobytes())
                 frames_written += 1
         except (BrokenPipeError, OSError) as exc:
             proc.stdin.close()
             _, stderr = proc.communicate(timeout=30)
-            raise _FfmpegFailure(str(exc) + " :: " + stderr.decode("utf-8", "ignore")[-2000:], consumed)
+            raise _FfmpegFailure(
+                str(exc) + " :: " + stderr.decode("utf-8", "ignore")[-2000:],
+                [],
+            )
         proc.stdin.close()
         _, stderr = proc.communicate(timeout=120)
         elapsed = time.perf_counter() - start
         if proc.returncode != 0 or not output_path.is_file():
-            raise _FfmpegFailure(stderr.decode("utf-8", "ignore")[-2000:], consumed)
+            raise _FfmpegFailure(stderr.decode("utf-8", "ignore")[-2000:], [])
         return frames_written, elapsed
 
 

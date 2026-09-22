@@ -286,7 +286,7 @@ def resolve_root_production_mp4(
                 return resolved
             if (
                 resolved.parent == base / "animation_clips"
-                and resolved.name.lower().startswith("aiwake_battle_")
+                and resolved.name.lower().startswith("aiwake_")
             ):
                 return resolved
     return None

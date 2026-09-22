@@ -45,10 +45,22 @@ class DialogueTurn:
     text: str = ""
     audio_path: str | None = None
     emotion: str = "neutral"
+    speech_start_time: float | None = None
+    reaction_emotion: str = "neutral"
 
     @property
     def duration(self) -> float:
         return max(0.0, self.end_time - self.start_time)
+
+    @property
+    def speech_start(self) -> float:
+        if self.speech_start_time is None:
+            return self.start_time
+        return max(self.start_time, min(self.end_time, self.speech_start_time))
+
+    @property
+    def spoken_duration(self) -> float:
+        return max(0.0, self.end_time - self.speech_start)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +135,7 @@ class AnalyzedAudio:
     n_frames: int
     rms: Sequence[float] = field(default_factory=list)
     active_speaker: Sequence[str | None] = field(default_factory=list)
+    speaking_speaker: Sequence[str | None] = field(default_factory=list)
     mouth_state: dict[str, Sequence[int]] = field(default_factory=dict)
     eye_state: dict[str, Sequence[int]] = field(default_factory=dict)
     viseme: dict[str, Sequence[str]] = field(default_factory=dict)
