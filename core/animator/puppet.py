@@ -140,6 +140,7 @@ class PuppetSkin:
     layer_files: dict[str, str]
     reference_canvas_size: tuple[int, int] = (480, 760)
     eye_bboxes: tuple[tuple[int, int, int, int], ...] = ()
+    lens_circles: tuple[tuple[float, float, float], ...] = ()
     mouth_style: str = "ghibli_mecha"
     palette: dict[str, str] | None = None
 
@@ -268,6 +269,11 @@ class PuppetSkin:
             key = rest_mouth_layer_key(state)
             layer_files[key] = resolve_file(key)
 
+        lens_circles = tuple(
+            (float(circle[0]), float(circle[1]), float(circle[2]))
+            for circle in calibration.get("lens_circles", ())
+            if len(circle) == 3
+        )
         character_id = str(data.get("character_id") or root.name)
         palette = {
             str(key): str(value)
@@ -282,6 +288,7 @@ class PuppetSkin:
             layer_files=layer_files,
             reference_canvas_size=reference_canvas_size,
             eye_bboxes=eye_bboxes,
+            lens_circles=lens_circles,
             mouth_style=str(data.get("mouth_style") or "ghibli_mecha"),
             palette=palette,
         )
@@ -424,10 +431,33 @@ class PuppetRig:
             x0, y0, x1, y1 = bbox
             self._rest_mouth_crop[state] = (mouth[y0:y1, x0:x1].copy(), bbox)
 
+        ref_w, ref_h = self.skin.reference_canvas_size
+        scale_x = self.canvas_size[0] / float(max(1, ref_w))
+        scale_y = self.canvas_size[1] / float(max(1, ref_h))
+        self._raw_lens_circles = tuple(
+            (
+                float(cx) * scale_x,
+                float(cy) * scale_y,
+                float(radius) * ((scale_x + scale_y) * 0.5),
+            )
+            for cx, cy, radius in self.skin.lens_circles
+        )
+        self._lens_circles = tuple(
+            (
+                cx + self._eye_stencil_nudge(index)[0],
+                cy + self._eye_stencil_nudge(index)[1],
+                radius,
+            )
+            for index, (cx, cy, radius) in enumerate(self._raw_lens_circles)
+        )
         self._eye_overlay: dict[int, np.ndarray] = {}
         self._eye_bbox: dict[int, tuple[int, int, int, int]] = {}
         for eye_state, eye_key in _EYE_LAYER_BY_STATE.items():
-            overlay = np.asarray(layers[eye_key], dtype=np.uint8).copy()
+            overlay = self._stencil_to_lenses(
+                self._translate_eye_overlay(
+                    np.asarray(layers[eye_key], dtype=np.uint8).copy()
+                )
+            )
             self._eye_overlay[eye_state] = overlay
             self._eye_bbox[eye_state] = _alpha_bbox(
                 overlay[..., 3].astype(np.float32),
@@ -441,9 +471,6 @@ class PuppetRig:
             pad=80,
         )
 
-        ref_w, ref_h = self.skin.reference_canvas_size
-        scale_x = self.canvas_size[0] / float(max(1, ref_w))
-        scale_y = self.canvas_size[1] / float(max(1, ref_h))
         self._pivot = (
             int(round(self.skin.anchors.head_pivot[0] * scale_x)),
             int(round(self.skin.anchors.head_pivot[1] * scale_y)),
@@ -624,6 +651,54 @@ class PuppetRig:
         self._rest_head_cache[state] = head
         return head
 
+    def _stencil_to_lenses(self, overlay: np.ndarray) -> np.ndarray:
+        """Zero every eyelid pixel that falls outside a lens circle."""
+        if overlay.shape[2] < 4 or not self._lens_circles:
+            return overlay
+        height, width = overlay.shape[:2]
+        grid_y, grid_x = np.ogrid[:height, :width]
+        keep = np.zeros((height, width), dtype=bool)
+        for cx, cy, radius in self._lens_circles:
+            keep |= (grid_x + 0.5 - cx) ** 2 + (grid_y + 0.5 - cy) ** 2 <= radius * radius
+        if bool(keep.all()):
+            return overlay
+        clipped = overlay.copy()
+        clipped[~keep] = 0
+        return clipped
+
+    def _eye_stencil_nudge(self, index: int) -> tuple[int, int]:
+        """Micron calibration in artist-canvas pixels for one optic."""
+        character = self.skin.character_id.lower()
+        if "gemini" in character and index == 1:
+            return (2, 0)  # viewer's-right / far optic
+        if "llama" in character and index == 0:
+            return (-2, -2)  # viewer's-left / near optic
+        return (0, 0)
+
+    def _translate_eye_overlay(self, overlay: np.ndarray) -> np.ndarray:
+        """Move each shutter with its calibrated stencil before clipping."""
+        if not self._raw_lens_circles:
+            return overlay
+        shifted = np.zeros_like(overlay)
+        height, width = overlay.shape[:2]
+        for index, (cx, cy, radius) in enumerate(self._raw_lens_circles):
+            dx, dy = self._eye_stencil_nudge(index)
+            pad = int(np.ceil(radius)) + 4
+            x0 = max(0, int(np.floor(cx)) - pad)
+            y0 = max(0, int(np.floor(cy)) - pad)
+            x1 = min(width, int(np.ceil(cx)) + pad + 1)
+            y1 = min(height, int(np.ceil(cy)) + pad + 1)
+            tx0, ty0, tx1, ty1 = x0 + dx, y0 + dy, x1 + dx, y1 + dy
+            sx0 = x0 + max(0, -tx0)
+            sy0 = y0 + max(0, -ty0)
+            sx1 = x1 - max(0, tx1 - width)
+            sy1 = y1 - max(0, ty1 - height)
+            tx0, ty0 = max(0, tx0), max(0, ty0)
+            tx1, ty1 = min(width, tx1), min(height, ty1)
+            if sx1 > sx0 and sy1 > sy0:
+                shifted[ty0:ty1, tx0:tx1] = overlay[sy0:sy1, sx0:sx1]
+        return shifted
+
     def eye_overlay(
         self,
         eye_state: int,
@@ -696,9 +771,17 @@ class PuppetRig:
             if not inner_is_right:
                 outer_point = (right, center)
                 inner_point = (left, inner_y)
-            stroke_px = (
-                7.5 if "gemini" in self.skin.character_id.lower() else 5.5
-            )
+            character = self.skin.character_id.lower()
+            is_gemini = "gemini" in character
+            is_llama = "llama" in character
+            # Near brow (viewer's left) is closer to camera, so it is wider.
+            # Far brow (viewer's right) stays at the 7.5px optic ink.
+            if is_gemini and index == 0:
+                stroke_px = 9.5
+            elif is_gemini:
+                stroke_px = 7.5
+            else:
+                stroke_px = 5.5
             ink_width = max(1, int(round(stroke_px * scale)))
             draw.line(
                 [outer_point, inner_point],
@@ -716,11 +799,19 @@ class PuppetRig:
                 Image.Resampling.LANCZOS,
             )
             brow_y = eye_y - self._eye_radius - 4
+            x_nudge = 0
+            y_nudge = 0
+            if is_gemini and index == 1:
+                x_nudge = 4  # far optic, viewer's right
+            elif is_gemini and index == 0:
+                y_nudge = -2  # near optic sits higher
+            elif is_llama and index == 0:
+                x_nudge = -3  # viewer's left
             layer.alpha_composite(
                 patch,
                 (
-                    eye_x - patch.width // 2,
-                    brow_y - (pad + patch_h // 2),
+                    eye_x - patch.width // 2 + x_nudge,
+                    brow_y - (pad + patch_h // 2) + y_nudge,
                 ),
             )
 

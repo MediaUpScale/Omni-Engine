@@ -952,7 +952,9 @@ def _check_frame(
 
 def _check_gemini_closed_blink(open_frame: np.ndarray, blink_frame: np.ndarray) -> str:
     """Require both calibrated optic lenses to darken at the 1.5s blink center."""
-    probes = ((513, 762), (756, 778))
+    # Lead-room docking places the optics here on the 1080x1920 frame.
+    # These are the glass discs, not the old centred-hero coordinates.
+    probes = ((392, 819), (633, 832))
     measurements: list[str] = []
     for index, (cx, cy) in enumerate(probes, start=1):
         radius = 34

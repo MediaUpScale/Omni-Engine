@@ -108,6 +108,8 @@ def test_cli_mode_defaults_fixed_and_accepts_cornered() -> None:
     assert parser.parse_args(["--quantity", "5"]).quantity == 5
     assert parser.parse_args(["-n", "3"]).quantity == 3
     assert parser.parse_args(["--count", "2"]).quantity == 2
+    assert parser.parse_args([]).enable_cta is False
+    assert parser.parse_args(["--enable-cta"]).enable_cta is True
     with pytest.raises(SystemExit):
         parser.parse_args(["--quantity", "0"])
 

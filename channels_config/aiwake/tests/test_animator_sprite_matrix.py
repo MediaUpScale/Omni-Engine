@@ -362,6 +362,18 @@ def test_only_llama_concession_uses_tight_camera(
     assert turns[5].speaker != turns[4].speaker
 
 
+def test_terminal_outro_holds_and_capitalizes_the_handle() -> None:
+    from channels_config.aiwake.animator_bridge import (  # noqa: PLC0415
+        _CYNICAL_HOOKS,
+        _OUTRO_S,
+        pick_cynical_hook,
+    )
+
+    assert _OUTRO_S == 2.8
+    assert all("@Aiwake" in line and "@aiwake" not in line for line in _CYNICAL_HOOKS)
+    assert "@Aiwake" in pick_cynical_hook("broadcast-master")
+
+
 def test_ffmpeg_contract_is_square_pixel_crf_with_locked_gop(tmp_path: Path) -> None:
     renderer = AnimationRenderer(width=1080, height=1920, fps=30)
     command = renderer._build_cmd(  # noqa: SLF001 - command contract regression
@@ -449,3 +461,38 @@ def test_versioned_skin_registry_defaults_to_v2_and_supports_overrides() -> None
         "orchestrator": "custom_left",
         "target": "llama_cyborg_v2",
     }
+
+
+def test_llama_blink_follows_the_circular_lens() -> None:
+    from core.animator.asset_generator import _draw_artist_eyelids
+
+    box = (20, 20, 220, 220)
+    half = np.asarray(
+        _draw_artist_eyelids(
+            (240, 240),
+            (box,),
+            casing=(76, 46, 36, 255),
+            closed=False,
+            circular=True,
+        )
+    )[..., 3]
+    closed = np.asarray(
+        _draw_artist_eyelids(
+            (240, 240),
+            (box,),
+            casing=(76, 46, 36, 255),
+            closed=True,
+            circular=True,
+        )
+    )[..., 3]
+    # Inscribed circle of the 200px box, centered at (120, 120), radius 100.
+    # Compare pixel centers so a pixel that straddles the rim is not treated
+    # as outside when its center still lies on the disc.
+    yy, xx = np.mgrid[:240, :240]
+    outside = (xx + 0.5 - 120) ** 2 + (yy + 0.5 - 120) ** 2 > 100 ** 2
+    assert int(half[outside].max()) == 0
+    assert int(closed[outside].max()) == 0
+    assert half[80, 120] > 200
+    assert half[160, 120] == 0
+    assert closed[120, 120] > 200
+    assert closed[24, 24] == 0

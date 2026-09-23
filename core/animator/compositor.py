@@ -78,6 +78,7 @@ class ShotReverseShotCompositor:
         styles: dict[str, SpeakerStyle],
         width: int = 1080,
         height: int = 1920,
+        enable_cta: bool = False,
         outro_start_s: float | None = None,
         outro_frame=None,
     ) -> None:
@@ -91,8 +92,8 @@ class ShotReverseShotCompositor:
         self.hud_band = (0, int(round(height * HUD_BAND_FRAC)))
         self.hero_band = (self.hud_band[1], int(round(height * (HUD_BAND_FRAC + HERO_BAND_FRAC))))
         self.subtitle_band = (self.hero_band[1], height)
-        self._outro_start_s = outro_start_s
-        self._outro_frame = outro_frame
+        self._outro_start_s = outro_start_s if enable_cta else None
+        self._outro_frame = outro_frame if enable_cta else None
 
         # Built once as PIL images (gradients, text, glows are expensive but
         # static) then frozen into numpy — the per-frame loop is pure
@@ -263,6 +264,9 @@ class ShotReverseShotCompositor:
             ):
                 yield self._outro_frame(t - self._outro_start_s)
                 continue
+            # Eyelid alpha is stencil-clipped to each lens circle on the
+            # puppet canvas before this crop, so a tight or wide frame cannot
+            # reveal a lid pixel outside the optic.
             camera_speaker = (
                 camera_speakers[index] if index < len(camera_speakers) else None
             )

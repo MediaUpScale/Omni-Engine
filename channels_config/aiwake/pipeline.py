@@ -244,6 +244,7 @@ def run_pipeline(
     excluded_foci: Sequence[str] = (),
     record_script: bool = True,
     dynamic_animation: bool = False,
+    enable_cta: bool = False,
     animation_skin: str = "v2",
     left_puppet: str | None = None,
     right_puppet: str | None = None,
@@ -278,6 +279,8 @@ def run_pipeline(
             transcript + per-turn voice tracks to the parametric dual
             face-off avatar animation engine instead — same inputs, same
             ``video_path`` output slot, zero changes to the debate loop.
+        enable_cta: Append the dynamic-animation terminal CTA. False (default)
+            ends 0.4 seconds after the final spoken word for a seamless loop.
         animation_skin: Versioned dynamic-animation preset (``v1`` or ``v2``).
         left_puppet: Optional orchestrator puppet ID override.
         right_puppet: Optional target puppet ID override.
@@ -412,6 +415,7 @@ def run_pipeline(
                         left_puppet=left_puppet,
                         right_puppet=right_puppet,
                         audio_config=cfg.audio,
+                        enable_cta=enable_cta,
                     )
                 except Exception as exc:  # noqa: BLE001 — a failed render must not lose the transcript
                     _LOG.error("dynamic_animation render failed: %s", exc)
@@ -498,6 +502,7 @@ def run_bulk_pipeline(
     output_dir: Path | None = None,
     quiet: bool = False,
     dynamic_animation: bool = False,
+    enable_cta: bool = False,
     animation_skin: str = "v2",
     left_puppet: str | None = None,
     right_puppet: str | None = None,
@@ -537,6 +542,7 @@ def run_bulk_pipeline(
         "output_dir": output_dir,
         "quiet": quiet,
         "dynamic_animation": dynamic_animation,
+        "enable_cta": enable_cta,
         "animation_skin": animation_skin,
         "left_puppet": left_puppet,
         "right_puppet": right_puppet,

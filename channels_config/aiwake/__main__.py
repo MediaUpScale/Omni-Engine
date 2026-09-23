@@ -129,6 +129,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Shorthand for --render-mode dynamic_animation.",
     )
     parser.add_argument(
+        "--enable-cta",
+        action="store_true",
+        help=(
+            "Append the 2.8s rotating terminal CTA to dynamic animation. "
+            "Disabled by default so videos end 0.4s after the final word."
+        ),
+    )
+    parser.add_argument(
         "--skin",
         choices=("v1", "v2"),
         default="v2",
@@ -325,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         "output_dir": args.output_dir,
         "quiet": args.quiet,
         "dynamic_animation": dynamic_animation,
+        "enable_cta": args.enable_cta,
         "animation_skin": args.skin,
         "left_puppet": args.left_puppet,
         "right_puppet": args.right_puppet,

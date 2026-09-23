@@ -52,6 +52,11 @@ def _ass_time(seconds: float) -> str:
     return f"{int(hours)}:{int(minutes):02d}:{secs:05.2f}"
 
 
+def _parse_ass_time(value: str) -> float:
+    hours, minutes, secs = value.split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(secs)
+
+
 def _escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")")
 
@@ -128,6 +133,7 @@ def build_ass(
     width: int = 1080,
     height: int = 1920,
     words_per_phrase: int | None = None,
+    fade_out_s: float = 0.0,
 ) -> Path:
     """Write a word-level karaoke ``.ass`` file and return its path."""
     del words_per_phrase  # Compatibility argument; bursts are now dynamically sized.
@@ -179,6 +185,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     f"{_ass_time(active.start_time)},{_ass_time(active.end_time)},"
                     f"Karaoke,,0,0,0,,{text}"
                 )
+
+    if fade_out_s > 0 and events:
+        fade_ms = max(1, int(round(fade_out_s * 1000)))
+        bits = events[-1].split(",", 9)
+        bits[2] = _ass_time(_parse_ass_time(bits[2]) + fade_out_s)
+        text = bits[9]
+        bits[9] = (
+            "{\\fad(0," + str(fade_ms) + ")" + text[1:]
+            if text.startswith("{")
+            else "{\\fad(0," + str(fade_ms) + ")}" + text
+        )
+        events[-1] = ",".join(bits)
 
     destination.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     _LOG.info("wrote %d karaoke subtitle events -> %s", len(events), destination)

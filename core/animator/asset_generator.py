@@ -74,7 +74,7 @@ CANVAS_SIZE = (480, 760)
 V2_CANVAS_SIZE = (720, 1080)
 SHARED_BACKGROUND_DIRNAME = "shared_backgrounds"
 SHARED_PANORAMA_FILENAME = "aiwake_arena_panorama_v2.png"
-ARTIST_ASSET_REVISION = 13
+ARTIST_ASSET_REVISION = 15
 _ANCHORS = {
     "head_pivot": [240, 250],
     "neck_pivot": [240, 370],
@@ -1421,6 +1421,98 @@ def _draw_ghibli_mouth_patch(
     return canvas.resize((patch_w, patch_h), Image.Resampling.LANCZOS)
 
 
+def _fit_optic_circle(
+    head: np.ndarray,
+    box: tuple[int, int, int, int],
+    *,
+    warm: bool,
+) -> tuple[float, float, float]:
+    """Center and radius of the painted glass, inside the metal housing."""
+    x0, y0, x1, y1 = box
+    crop = head[y0:y1, x0:x1]
+    red, green, blue, alpha = [crop[..., channel].astype(np.int16) for channel in range(4)]
+    if warm:
+        glass = (alpha > 200) & (red > 235) & (green > 165) & (blue > 110) & ((red - blue) > 70)
+    else:
+        glass = (
+            (alpha > 200)
+            & (blue > 185)
+            & (green > 165)
+            & (red > 130)
+            & (blue > red + 20)
+        )
+    ys, xs = np.nonzero(glass)
+    if xs.size < 40:
+        cx = (x0 + x1) / 2.0
+        cy = (y0 + y1) / 2.0
+        return cx, cy, min(x1 - x0, y1 - y0) / 2.0 * 0.72
+    cx = float(xs.mean()) + x0
+    cy = float(ys.mean()) + y0
+    distances = np.sqrt((xs + x0 - cx) ** 2 + (ys + y0 - cy) ** 2)
+    radius = max(8.0, float(np.percentile(distances, 94)) - 1.0)
+    return cx, cy, radius
+
+
+def _paint_lens_shutters(
+    canvas_size: tuple[int, int],
+    circles: tuple[tuple[float, float, float], ...],
+    *,
+    casing: tuple[int, int, int, int],
+    closed: bool,
+    ink: tuple[int, int, int, int],
+    scale: int = 4,
+) -> Image.Image:
+    """Fill each optic with a shutter that cannot leave the lens circle.
+
+    Half-closed paints the upper semicircle. Fully closed paints the whole
+    disc and cuts a 2px horizontal seam across the diameter. After the
+    supersampled draw, alpha outside ``(x-cx)^2 + (y-cy)^2 <= r^2`` is
+    forced to zero.
+    """
+    width, height = canvas_size
+    sw, sh = width * scale, height * scale
+    yy, xx = np.mgrid[0:sh, 0:sw]
+    x = (xx + 0.5) / scale
+    y = (yy + 0.5) / scale
+    patch = np.zeros((sh, sw, 4), dtype=np.uint8)
+    for cx, cy, radius in circles:
+        dist2 = (x - cx) ** 2 + (y - cy) ** 2
+        lens = dist2 <= radius * radius
+        mask = lens if closed else (lens & (y <= cy))
+        patch[mask, 0] = casing[0]
+        patch[mask, 1] = casing[1]
+        patch[mask, 2] = casing[2]
+        patch[mask, 3] = casing[3]
+        rim = mask & (dist2 >= (radius - 3.0) ** 2)
+        patch[rim, 0] = ink[0]
+        patch[rim, 1] = ink[1]
+        patch[rim, 2] = ink[2]
+        patch[rim, 3] = 255
+    image = Image.fromarray(patch).resize((width, height), Image.Resampling.LANCZOS)
+    arr = np.asarray(image).copy()
+    grid_y, grid_x = np.ogrid[:height, :width]
+    keep = np.zeros((height, width), dtype=bool)
+    for cx, cy, radius in circles:
+        inside = (grid_x + 0.5 - cx) ** 2 + (grid_y + 0.5 - cy) ** 2 <= radius * radius
+        keep |= inside
+        columns = np.arange(width)
+        on_diameter = (columns + 0.5 - cx) ** 2 <= radius * radius
+        seam_y = int(round(cy))
+        if closed:
+            y0 = max(0, seam_y - 1)
+            y1 = min(height, seam_y + 1)
+        else:
+            y0 = max(0, seam_y - 2)
+            y1 = min(height, seam_y)
+        if y1 > y0:
+            arr[y0:y1, on_diameter, 0] = ink[0]
+            arr[y0:y1, on_diameter, 1] = ink[1]
+            arr[y0:y1, on_diameter, 2] = ink[2]
+            arr[y0:y1, on_diameter, 3] = 255
+    arr[~keep] = 0
+    return Image.fromarray(arr)
+
+
 def _draw_artist_eyelids(
     canvas_size: tuple[int, int],
     eye_bboxes: tuple[tuple[int, int, int, int], ...],
@@ -1428,12 +1520,25 @@ def _draw_artist_eyelids(
     casing: tuple[int, int, int, int],
     closed: bool,
     ink: tuple[int, int, int, int] = _GHIBLI_OUTLINE,
+    circular: bool = False,
 ) -> Image.Image:
     """Supersampled metal eyelid overlays aligned to finished artist optics."""
     layer = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
     scale = 4
     for x0, y0, x1, y1 in eye_bboxes:
         width, height = x1 - x0, y1 - y0
+        if circular:
+            radius = min(width, height) / 2.0
+            painted = _paint_lens_shutters(
+                (width, height),
+                ((width / 2.0, height / 2.0, radius),),
+                casing=casing,
+                closed=closed,
+                ink=ink,
+                scale=scale,
+            )
+            layer.alpha_composite(painted, (x0, y0))
+            continue
         patch = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
         draw = ImageDraw.Draw(patch, "RGBA")
         bounds = (2 * scale, 2 * scale, (width - 2) * scale, (height - 2) * scale)
@@ -1446,8 +1551,6 @@ def _draw_artist_eyelids(
                 width=4 * scale,
             )
         else:
-            # Upper lid covers half the lens; its curved lower edge follows
-            # the circular housing rather than reading as a rectangular mask.
             draw.pieslice(bounds, 180, 360, fill=casing, outline=ink, width=4 * scale)
             cy = height * scale // 2
             draw.arc(
@@ -1541,21 +1644,27 @@ def generate_ghibli_llama_assets(puppet_dir: Path) -> dict[str, object]:
             / len(eye_bboxes)
         )
     )
-    # The artist head already contains its optical sensors. Open is
-    # transparent; half/closed overlays are matching dark-bronze eyelids.
+    # Shutters are painted on the glass discs, then hard-clipped to those
+    # circles so the bronze housing never receives eyelid pixels.
+    head_px = np.asarray(head)
+    lens_circles = tuple(
+        _fit_optic_circle(head_px, box, warm=True) for box in eye_bboxes
+    )
     transparent = Image.new("RGBA", head.size, (0, 0, 0, 0))
     transparent.save(puppet_dir / "eyes_open.png")
-    _draw_artist_eyelids(
+    _paint_lens_shutters(
         head.size,
-        eye_bboxes,
+        lens_circles,
         casing=(76, 46, 36, 255),
         closed=False,
+        ink=_GHIBLI_OUTLINE,
     ).save(puppet_dir / "eyes_half.png")
-    _draw_artist_eyelids(
+    _paint_lens_shutters(
         head.size,
-        eye_bboxes,
+        lens_circles,
         casing=(76, 46, 36, 255),
         closed=True,
+        ink=_GHIBLI_OUTLINE,
     ).save(puppet_dir / "eyes_blink.png")
 
     manifest_path = puppet_dir / "puppet.json"
@@ -1586,6 +1695,10 @@ def generate_ghibli_llama_assets(puppet_dir: Path) -> dict[str, object]:
             "calibration": {
                 "chin_plate_bbox": list(plate_bbox),
                 "eye_bboxes": [list(box) for box in eye_bboxes],
+                "lens_circles": [
+                    [round(cx, 2), round(cy, 2), round(radius, 2)]
+                    for cx, cy, radius in lens_circles
+                ],
                 "layer_offsets": {"head": [0, 0], "body": [0, 0]},
                 "source_head_sha256": head_digest,
             },
@@ -1723,20 +1836,22 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
             / len(eye_bboxes)
         )
     )
-    # Optics are already finished in the artist head. Open is transparent;
-    # the other states add graphite upper lids or closed seams.
+    head_px = np.asarray(head)
+    lens_circles = tuple(
+        _fit_optic_circle(head_px, box, warm=False) for box in eye_bboxes
+    )
     transparent = Image.new("RGBA", head.size, (0, 0, 0, 0))
     transparent.save(puppet_dir / "eyes_open.png")
-    _draw_artist_eyelids(
+    _paint_lens_shutters(
         head.size,
-        eye_bboxes,
+        lens_circles,
         casing=(51, 65, 75, 255),
         closed=False,
         ink=(21, 32, 38, 255),
     ).save(puppet_dir / "eyes_half.png")
-    _draw_artist_eyelids(
+    _paint_lens_shutters(
         head.size,
-        eye_bboxes,
+        lens_circles,
         casing=(51, 65, 75, 255),
         closed=True,
         ink=(21, 32, 38, 255),
@@ -1770,6 +1885,10 @@ def generate_gemini_anime_assets(puppet_dir: Path) -> dict[str, object]:
             "calibration": {
                 "facial_plate_bbox": list(plate_bbox),
                 "eye_bboxes": [list(box) for box in eye_bboxes],
+                "lens_circles": [
+                    [round(cx, 2), round(cy, 2), round(radius, 2)]
+                    for cx, cy, radius in lens_circles
+                ],
                 "mouth_rotation_deg": -4.0,
                 "layer_offsets": {"head": [0, 0], "body": [0, 0]},
                 "source_head_sha256": hashlib.sha256(head_path.read_bytes()).hexdigest(),

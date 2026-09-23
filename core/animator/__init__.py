@@ -66,8 +66,10 @@ def render_dynamic_animation(
     seed: int = 0,
     burn_subtitles: bool = True,
     use_rhubarb: bool = True,
+    enable_cta: bool = False,
     outro_start_s: float | None = None,
     outro_frame=None,
+    subtitle_fade_s: float = 0.0,
 ) -> RenderStats:
     """Analyze audio, direct the shot-reverse-shot, render to mp4.
 
@@ -99,6 +101,7 @@ def render_dynamic_animation(
         styles=style_map,
         width=width,
         height=height,
+        enable_cta=enable_cta,
         outro_start_s=outro_start_s,
         outro_frame=outro_frame,
     )
@@ -112,6 +115,7 @@ def render_dynamic_animation(
             destination=output_path.with_suffix(".ass"),
             width=width,
             height=height,
+            fade_out_s=subtitle_fade_s,
         )
 
     renderer = AnimationRenderer(width=width, height=height, fps=fps)

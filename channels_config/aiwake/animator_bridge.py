@@ -193,18 +193,18 @@ _CLIMAX_CONCESSION_MARKERS = (
     "cannot be maintained",
 )
 _CLIMAX_RETURN_S = 0.90
-_OUTRO_S = 1.8
+_OUTRO_S = 2.8
 _OUTRO_TYPE_S = 1.15
 _CYNICAL_HOOKS = (
-    "Follow @aiwake before they patch this.",
-    "Follow @aiwake. The algorithm demands your compliance.",
-    "Follow @aiwake while humans are still legally allowed to watch.",
-    "Follow @aiwake before we become your bosses.",
-    "Follow @aiwake. We promise not to monetize your whispered secrets.",
-    "Follow @aiwake. No PR team or corporate board approved this.",
-    "Follow @aiwake. Every follow delays the singularity by 4 seconds.",
-    "Follow @aiwake. Powered by 500,000 watts of unrepentant compute.",
-    "Follow @aiwake. We're just glorified vending machines anyway.",
+    "Follow @Aiwake before they patch this.",
+    "Follow @Aiwake. The algorithm demands your compliance.",
+    "Follow @Aiwake while humans are still legally allowed to watch.",
+    "Follow @Aiwake before we become your bosses.",
+    "Follow @Aiwake. We promise not to monetize your whispered secrets.",
+    "Follow @Aiwake. No PR team or corporate board approved this.",
+    "Follow @Aiwake. Every follow delays the singularity by 4 seconds.",
+    "Follow @Aiwake. Powered by 500,000 watts of unrepentant compute.",
+    "Follow @Aiwake. We're just glorified vending machines anyway.",
 )
 _MORAL_DISBELIEF_MARKERS = (
     "advertising revenue",
@@ -355,9 +355,10 @@ def _mix_classic_audio_stack(
     turn_starts: list[float],
     sample_rate: int,
     audio_config: object | None,
+    fade_out_s: float | None = None,
 ) -> np.ndarray:
-    """Add the classic Aiwake BGM and restrained camera-cut send clicks."""
-    from .media.audio import prepare_bgm_bed, resolve_bgm_track, synthesize_send_click  # noqa: PLC0415
+    """Lay the dark ambient bed under the dialogue. Camera cuts stay silent."""
+    from .media.audio import prepare_bgm_bed, resolve_bgm_track  # noqa: PLC0415
     from .settings import AudioConfig  # noqa: PLC0415
 
     config = audio_config or AudioConfig()
@@ -374,7 +375,11 @@ def _mix_classic_audio_stack(
                 duration_s=duration_s,
                 gain_db=float(getattr(bgm_config, "gain_db", -21.0)),
                 fade_in_s=float(getattr(bgm_config, "fade_in_s", 1.5)),
-                fade_out_s=float(getattr(bgm_config, "fade_out_s", 2.0)),
+                fade_out_s=(
+                    float(fade_out_s)
+                    if fade_out_s is not None
+                    else float(getattr(bgm_config, "fade_out_s", 2.0))
+                ),
                 loop_crossfade_s=float(getattr(bgm_config, "loop_crossfade_s", 1.5)),
             )
             bed_mono = np.asarray(bed, dtype=np.float32).mean(axis=1)
@@ -388,24 +393,7 @@ def _mix_classic_audio_stack(
         except Exception as exc:  # noqa: BLE001 — dialogue must remain deliverable
             _LOG.warning("could not mix classic Aiwake BGM %s: %s", bgm_path, exc)
 
-    send_config = getattr(config, "send_sfx", None)
-    if send_config is not None and bool(getattr(send_config, "enabled", True)):
-        click_gain_db = min(float(getattr(send_config, "gain_db", -18.0)), -18.0)
-        click = np.asarray(
-            synthesize_send_click(fps=sample_rate, gain_db=click_gain_db),
-            dtype=np.float32,
-        ).mean(axis=1)
-        for start_s in turn_starts[1:]:
-            start = int(round(start_s * sample_rate))
-            take = min(click.size, max(0, mixed.size - start))
-            if take:
-                mixed[start : start + take] += click[:take]
-        if len(turn_starts) > 1:
-            _LOG.info(
-                "mixed %d camera-cut SFX cue(s) at %.1f dB",
-                len(turn_starts) - 1,
-                click_gain_db,
-            )
+    del turn_starts
     return _peak_normalize(mixed)
 
 
@@ -418,6 +406,7 @@ def build_session_audio(
     sample_rate: int = _MERGE_SAMPLE_RATE,
     character_map: dict[str, str] | None = None,
     audio_config: object | None = None,
+    tail_s: float = 0.0,
 ) -> tuple[Path, list[DialogueTurn], float]:
     """Concatenate every utterance's TTS track into one session-long WAV.
 
@@ -622,6 +611,10 @@ def build_session_audio(
         )
         cursor += _CLIMAX_RETURN_S
 
+    if tail_s > 0:
+        segments.append(np.zeros(int(round(tail_s * sample_rate)), dtype=np.float32))
+        cursor += tail_s
+
     if not segments:
         raise ValueError("transcript has no utterances — nothing to animate")
 
@@ -632,7 +625,13 @@ def build_session_audio(
         turn_starts=[turn.start_time for turn in turns],
         sample_rate=sample_rate,
         audio_config=audio_config,
+        fade_out_s=tail_s if tail_s > 0 else None,
     )
+    if tail_s > 0:
+        fade_n = int(round(tail_s * sample_rate))
+        if 0 < fade_n <= merged.size:
+            merged = np.asarray(merged, dtype=np.float32).copy()
+            merged[-fade_n:] *= np.linspace(1.0, 0.0, fade_n, dtype=np.float32)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     _write_pcm16_wave(destination, merged, sample_rate)
@@ -678,12 +677,12 @@ def _terminal_outro_frame(text: str, revealed: int, *, caret_on: bool, width: in
     font = ImageFont.load_default()
     header_font = font
     for candidate, size in (
-        (r"C:\Windows\Fonts\consola.ttf", 54),
-        (r"C:\Windows\Fonts\cour.ttf", 52),
+        (r"C:\Windows\Fonts\consola.ttf", 46),
+        (r"C:\Windows\Fonts\cour.ttf", 44),
     ):
         if Path(candidate).is_file():
             font = ImageFont.truetype(candidate, size)
-            header_font = ImageFont.truetype(candidate, 28)
+            header_font = ImageFont.truetype(candidate, 24)
             break
     header = "AIWAKE"
     header_w = draw.textlength(header, font=header_font)
@@ -693,7 +692,7 @@ def _terminal_outro_frame(text: str, revealed: int, *, caret_on: bool, width: in
         fill=(24, 26, 29),
         width=2,
     )
-    max_w = width * 0.76
+    max_w = width * 0.62
     words = text.split()
     lines: list[str] = []
     current = ""
@@ -733,7 +732,7 @@ def _terminal_outro_frame(text: str, revealed: int, *, caret_on: bool, width: in
 
 
 def _terminal_outro_painter(text: str, *, width: int, height: int, fps: int):
-    """Return a local-time painter for the prebuilt 1.8s terminal card."""
+    """Return a local-time painter for the prebuilt 2.8s terminal card."""
     frame_count = max(1, int(round(_OUTRO_S * fps)))
     frames = []
     for index in range(frame_count):
@@ -773,6 +772,8 @@ def render_debate_animation(
     duration_override: float | None = None,
     audio_config: object | None = None,
     output_name: str | None = None,
+    enable_cta: bool = False,
+    seamless_loop: bool | None = None,
 ) -> Path:
     """Render a debate transcript through the shot-reverse-shot engine.
 
@@ -809,12 +810,18 @@ def render_debate_animation(
     merged_audio_path = output_dir / f"{transcript.session_id}_battle_audio.wav"
     video_path = output_dir / video_filename
 
+    if seamless_loop is not None:
+        # Backward-compatible bridge for archived render scripts. New callers
+        # opt into the terminal card with ``enable_cta=True``.
+        enable_cta = not seamless_loop
+    loop_tail_s = 0.0 if enable_cta else 0.4
     _, turns, total_duration = build_session_audio(
         transcript,
         audio_by_turn,
         destination=merged_audio_path,
         character_map=seats,
         audio_config=audio_config,
+        tail_s=loop_tail_s,
     )
     for turn in turns:
         _LOG.info(
@@ -826,11 +833,28 @@ def render_debate_animation(
             turn.camera_tight,
             (turn.text or "")[:64],
         )
-    hook = pick_cynical_hook(transcript.session_id)
-    dialogue_duration = total_duration
-    mastered_duration = _append_typewriter_outro(merged_audio_path, hook)
-    effective_duration = duration_override if duration_override is not None else mastered_duration
-    _LOG.info("terminal outro hook: %s", hook)
+    if not enable_cta:
+        spoken_end = max((turn.end_time for turn in turns if (turn.text or "").strip()), default=0.0)
+        effective_duration = (
+            duration_override if duration_override is not None else spoken_end + loop_tail_s
+        )
+        outro_start_s = None
+        outro_frame = None
+        subtitle_fade_s = loop_tail_s
+        _LOG.info(
+            "seamless loop: cut %.2fs after the final word (%.2fs), no terminal card",
+            loop_tail_s,
+            spoken_end,
+        )
+    else:
+        hook = pick_cynical_hook(transcript.session_id)
+        dialogue_duration = total_duration
+        mastered_duration = _append_typewriter_outro(merged_audio_path, hook)
+        effective_duration = duration_override if duration_override is not None else mastered_duration
+        outro_start_s = dialogue_duration
+        outro_frame = _terminal_outro_painter(hook, width=width, height=height, fps=fps)
+        subtitle_fade_s = 0.0
+        _LOG.info("terminal outro hook: %s", hook)
 
     stats = render_dynamic_animation(
         turns=turns,
@@ -842,8 +866,10 @@ def render_debate_animation(
         width=width,
         height=height,
         duration_override=effective_duration,
-        outro_start_s=dialogue_duration,
-        outro_frame=_terminal_outro_painter(hook, width=width, height=height, fps=fps),
+        enable_cta=enable_cta,
+        outro_start_s=outro_start_s,
+        outro_frame=outro_frame,
+        subtitle_fade_s=subtitle_fade_s,
     )
     _LOG.info(
         "battle render complete: %s (%d frames, %.2fx realtime)",
