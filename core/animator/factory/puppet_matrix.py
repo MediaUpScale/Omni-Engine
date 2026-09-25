@@ -9,6 +9,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+ANATOMICAL_TOLERANCE_ZONE = {
+    "head_width_min": 380,
+    "head_width_max": 480,
+    "head_height_min": 490,
+    "head_height_max": 580,
+    "target_head_height": 540,
+    "target_eye_y": 620,
+    "target_head_x": 540,
+    "shoulder_width_min": 720,
+    "shoulder_width_max": 940,
+    "target_shoulder_width": 850,
+    "body_bottom_anchor_y": 1920,
+}
+
+
 PUPPET_MATRIX = {
     "canvas_size": (1080, 1920),
     "target_eye_y": 770,
@@ -80,4 +95,9 @@ def solve_puppet_matrix(
     )
 
 
-__all__ = ["PUPPET_MATRIX", "PuppetMatrixTransform", "solve_puppet_matrix"]
+__all__ = [
+    "ANATOMICAL_TOLERANCE_ZONE",
+    "PUPPET_MATRIX",
+    "PuppetMatrixTransform",
+    "solve_puppet_matrix",
+]

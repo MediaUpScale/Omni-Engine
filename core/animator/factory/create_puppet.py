@@ -196,6 +196,58 @@ def _save_generated_response(response: Any, destination: Path) -> bool:
     return False
 
 
+def generate_imagen3_image(
+    prompt: str,
+    destination: Path,
+    *,
+    aspect_ratio: str = "9:16",
+    model: str = "imagen-3.0-generate-002",
+) -> str:
+    """Generate one image on Imagen 3. Does not fall back to Flash."""
+    key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY is required when --image-path is omitted")
+    from core.google_guardrail import (  # noqa: PLC0415
+        estimate_call_cost_usd,
+        get_google_cost_tracker,
+        make_guarded_gemini_client,
+    )
+    from google.genai import types  # noqa: PLC0415
+
+    client = make_guarded_gemini_client(key)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    print(f"active image model: {model}")
+    tracker = get_google_cost_tracker()
+    estimate = estimate_call_cost_usd(model, images=1, kind="image")
+    tracker.preflight(estimate, model=model, source="factory.create_puppet", kind="image")
+    try:
+        response = client.models.generate_images(
+            model=model,
+            prompt=prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio=aspect_ratio,
+                output_mime_type="image/png",
+            ),
+        )
+    except Exception as exc:
+        if "404" not in str(exc):
+            raise
+        raise RuntimeError(
+            "imagen-3.0-generate-002 is unavailable; gemini-3-pro-image is prohibited"
+        ) from exc
+    if not _save_generated_response(response, destination):
+        raise RuntimeError(f"{model} response contained no image payload")
+    tracker.record(
+        model=model,
+        kind="image",
+        images=1,
+        source="factory.create_puppet",
+        status="ok",
+    )
+    return model
+
+
 def generate_character_image(
     prompt: str,
     destination: Path,
