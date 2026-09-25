@@ -37,7 +37,7 @@ def _row(
         "session_id": session,
         "timestamp": timestamp,
         "topic": "Who built you?",
-        "video_path": path or f"/videos/aiwake_debate_{session}.mp4",
+        "video_path": path or f"/outputs/aiwake/animation_clips/aiwake_battle_{session}.mp4",
         "base_metadata": {
             "title": title or f"Base {session}",
             "caption": caption,
@@ -69,7 +69,7 @@ def test_plan_skips_tests_and_reproved_folders() -> None:
     ok = _row(
         session="ok",
         timestamp="2026-09-05T10:00:00+00:00",
-        path="/outputs/aiwake/aiwake_debate_ok.mp4",
+        path="/outputs/aiwake/animation_clips/aiwake_battle_ok.mp4",
     )
     reproved = _row(
         session="bad-reproved",
@@ -94,6 +94,23 @@ def test_plan_skips_tests_and_reproved_folders() -> None:
     assert "tmp" in reasons
     picked = select_pending_rows([ok, reproved, tests, scratch], limit=10)
     assert [row["session_id"] for row in picked] == ["ok"]
+
+
+def test_plan_rejects_retired_terminal_aesthetic() -> None:
+    terminal = _row(
+        session="terminal",
+        timestamp="2026-09-09T10:00:00+00:00",
+        path="/outputs/aiwake/aiwake_debate_terminal.mp4",
+    )
+    animation = _row(
+        session="animation",
+        timestamp="2026-09-08T10:00:00+00:00",
+    )
+    planned, rejected = plan_schedule([terminal, animation], limit=10)
+    assert [item.session_id for item in planned] == ["animation"]
+    assert rejected[0]["session_id"] == "terminal"
+    assert "animation_clips" in rejected[0]["reason"]
+    assert select_pending_rows([terminal, animation], limit=10) == [animation]
 
 
 def test_select_pending_newest_first_top_10() -> None:
@@ -245,7 +262,8 @@ def test_cli_defaults_to_execute() -> None:
 
 def test_execute_uses_publisher_wrapper(tmp_path: Path) -> None:
     library = tmp_path / "content_library.json"
-    video = tmp_path / "aiwake_debate_sess1.mp4"
+    video = tmp_path / "animation_clips" / "aiwake_battle_sess1.mp4"
+    video.parent.mkdir()
     video.write_bytes(b"0" * 8)
     row = _row(
         session="sess1",

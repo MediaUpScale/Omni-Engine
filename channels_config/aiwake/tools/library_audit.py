@@ -29,7 +29,6 @@ from channels_config.aiwake.tools.library_sanitize import has_prompt_leakage
 from channels_config.aiwake.tools.post_planner import (
     CHANNEL_ID,
     MAX_HASHTAGS,
-    YOUTUBE_MATCHUP,
     extract_hashtags,
     load_dialogue,
     run_planner,
@@ -467,9 +466,15 @@ def run_audit(
                 if field and len(extract_hashtags(field)) > MAX_HASHTAGS:
                     report.caption_errors.append(f"{session_id_of(row)}: >{MAX_HASHTAGS} hashtags")
                     report.captions_ok = False
+            from channels_config.aiwake.tools.metadata_generator import TITLE_MAX_CHARS, has_chapter_timestamps
+
             title = str(((row.get("platform_overrides") or {}).get("youtube") or {}).get("title") or "")
-            if title and YOUTUBE_MATCHUP not in title:
-                report.caption_errors.append(f"{session_id_of(row)}: YouTube title missing matchup")
+            if title and len(title) > TITLE_MAX_CHARS:
+                report.caption_errors.append(f"{session_id_of(row)}: title over {TITLE_MAX_CHARS} chars")
+                report.captions_ok = False
+            yt_caption = str(((row.get("platform_overrides") or {}).get("youtube") or {}).get("caption") or "")
+            if yt_caption and has_chapter_timestamps(yt_caption):
+                report.caption_errors.append(f"{session_id_of(row)}: chapter timestamps")
                 report.captions_ok = False
     else:
         report.captions_ok = True

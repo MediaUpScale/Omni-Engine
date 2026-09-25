@@ -23,7 +23,7 @@ from typing import Literal
 
 try:
     from .contracts import DebateTranscript
-    from .media.audio import build_engine
+    from .media.audio import DEEPSEEK_CANONICAL_VOICE, build_engine
     from .memory import DebateMemory, script_fingerprint, scripts_overlap
     from .models.llm_factory import force_offline
     from .observers.core import (
@@ -44,7 +44,7 @@ try:
     )
 except ImportError:  # pragma: no cover — standalone extraction
     from contracts import DebateTranscript  # type: ignore[no-redef]
-    from media.audio import build_engine  # type: ignore[no-redef]
+    from media.audio import DEEPSEEK_CANONICAL_VOICE, build_engine  # type: ignore[no-redef]
     from memory import DebateMemory, script_fingerprint, scripts_overlap  # type: ignore[no-redef]
     from models.llm_factory import force_offline  # type: ignore[no-redef]
     from observers.core import (  # type: ignore[no-redef]
@@ -248,6 +248,7 @@ def run_pipeline(
     animation_skin: str = "v2",
     left_puppet: str | None = None,
     right_puppet: str | None = None,
+    duration_override: float | None = None,
     production_publish: bool = False,
 ) -> PipelineResult:
     """Run a debate and (optionally) produce the video.
@@ -284,6 +285,7 @@ def run_pipeline(
         animation_skin: Versioned dynamic-animation preset (``v1`` or ``v2``).
         left_puppet: Optional orchestrator puppet ID override.
         right_puppet: Optional target puppet ID override.
+        duration_override: Optional verification-render cap in seconds.
 
     Returns:
         A :class:`PipelineResult`. Partial runs still return their transcript
@@ -321,12 +323,37 @@ def run_pipeline(
         _LOG.info("memory reset")
 
     room = DebateRoom(cfg, topic=topic)
-    media_dir = output_dir or resolve_outputs_dir(cfg)
+    from utils.pipeline_paths import coerce_outputs_path  # noqa: PLC0415
+
+    channel_dir = resolve_outputs_dir(cfg)
+    if duration_override is not None:
+        media_dir = channel_dir / "_test_harness"
+    elif output_dir is not None:
+        media_dir = coerce_outputs_path(output_dir)
+    else:
+        media_dir = channel_dir
 
     voice_observer: VoiceObserver | None = None
     if with_audio or with_video:
         # The silent engine keeps the timeline honest when audio is off.
         audio_cfg = cfg.audio if with_audio else cfg.audio.model_copy(update={"engine": "silent"})
+        if (right_puppet or "").strip().lower() == "deepseek_cyborg_v3":
+            voice_map = dict(audio_cfg.voice_map)
+            voice_map.update(
+                {
+                    "target": DEEPSEEK_CANONICAL_VOICE,
+                    "llama": DEEPSEEK_CANONICAL_VOICE,
+                    "llama-70b": DEEPSEEK_CANONICAL_VOICE,
+                    "deepseek": DEEPSEEK_CANONICAL_VOICE,
+                    "deepseek-chat": DEEPSEEK_CANONICAL_VOICE,
+                }
+            )
+            audio_cfg = audio_cfg.model_copy(
+                update={
+                    "target_voice": DEEPSEEK_CANONICAL_VOICE,
+                    "voice_map": voice_map,
+                }
+            )
         voice_observer = VoiceObserver(build_engine(audio_cfg), room.session_id)
 
     attach_optional_plugins()
@@ -403,7 +430,11 @@ def run_pipeline(
                 # Experimental animation battles never mix with production
                 # terminal reels: dedicated subfolder under the same
                 # {OUTPUT_PATH}/aiwake/ tree, not the shared media_dir.
-                animation_dir = media_dir / "animation_clips"
+                animation_dir = (
+                    media_dir
+                    if duration_override is not None
+                    else media_dir / "animation_clips"
+                )
                 if production_publish:
                     archive_animation_prototypes(animation_dir)
                 try:
@@ -416,6 +447,12 @@ def run_pipeline(
                         right_puppet=right_puppet,
                         audio_config=cfg.audio,
                         enable_cta=enable_cta,
+                        duration_override=duration_override,
+                        output_name=(
+                            "test_v3_iteration.mp4"
+                            if duration_override is not None
+                            else None
+                        ),
                     )
                 except Exception as exc:  # noqa: BLE001 — a failed render must not lose the transcript
                     _LOG.error("dynamic_animation render failed: %s", exc)

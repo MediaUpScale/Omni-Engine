@@ -9,10 +9,8 @@ from channels_config.aiwake.tools.library_audit import (
     run_audit,
 )
 from channels_config.aiwake.tools.post_planner import (
-    LINKEDIN_CLOSING,
     MAX_HASHTAGS,
     SOCIAL_RENDER_NOTE,
-    YOUTUBE_MATCHUP,
     extract_hashtags,
 )
 
@@ -138,9 +136,9 @@ def test_run_audit_moves_rejects_and_exports_clean_planners(tmp_path: Path) -> N
     for row in kept:
         assert len(extract_hashtags(row["post_planner_caption"])) == MAX_HASHTAGS
         assert "\n\n" in row["post_planner_caption"]
-        assert YOUTUBE_MATCHUP in row["platform_overrides"]["youtube"]["title"]
+        assert len(row["platform_overrides"]["youtube"]["title"]) <= 55
         assert "http" not in row["linkedin_caption"].lower()
-        assert LINKEDIN_CLOSING in row["linkedin_caption"]
+        assert "DMs open." in row["linkedin_caption"]
     reels = json.loads((outputs / "postplanner" / "post_planner_reels_tiktok.json").read_text(encoding="utf-8"))
     linkedin = json.loads((outputs / "postplanner" / "post_planner_linkedin.json").read_text(encoding="utf-8"))
     assert {item["session_id"] for item in reels} == {"keep_clone", "keep_unique"}

@@ -165,6 +165,11 @@ _CHANNEL_SKIP_FOLDERS = frozenset({
 })
 
 
+def is_animation_clip(path: Path | str) -> bool:
+    """True only for the current broadcast aesthetic."""
+    return "animation_clips" in {part.lower() for part in Path(path).parts}
+
+
 def excluded_video_folder(path: Path | str) -> str:
     """Return the skipped folder name if *path* lives under tests/reproved/etc.
 
@@ -192,6 +197,7 @@ def select_pending_rows(
         row
         for row in rows
         if youtube_status(row) == "pending"
+        and is_animation_clip(str(row.get("video_path") or ""))
         and not excluded_video_folder(str(row.get("video_path") or ""))
     ]
     pending.sort(key=row_recency_key, reverse=True)
@@ -294,11 +300,18 @@ def plan_schedule(
     rejected: list[dict[str, str]] = []
     eligible: list[dict[str, Any]] = []
     for row in pending:
-        skipped = excluded_video_folder(str(row.get("video_path") or ""))
+        video_path = str(row.get("video_path") or "")
+        skipped = excluded_video_folder(video_path)
         if skipped:
             rejected.append({
-                "session_id": str(row.get("session_id") or Path(str(row.get("video_path") or "")).stem),
+                "session_id": str(row.get("session_id") or Path(video_path).stem),
                 "reason": f"skipped folder '{skipped}' (tests/reproved/archive are never queued)",
+            })
+            continue
+        if not is_animation_clip(video_path):
+            rejected.append({
+                "session_id": str(row.get("session_id") or Path(video_path).stem),
+                "reason": "terminal aesthetic retired; only animation_clips are queued",
             })
             continue
         catalog_errors = validate_queue_ready(row, require_scheduled_time=False)

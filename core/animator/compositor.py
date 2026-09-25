@@ -35,6 +35,7 @@ from .puppet import (
     emotion_brow_state,
     emotion_rest_mouth_state,
 )
+from .factory.puppet_matrix import PUPPET_MATRIX, solve_puppet_matrix
 from .types import REST_VISEME, AnalyzedAudio, SpeakerStyle
 
 _LOG = logging.getLogger("animator.compositor")
@@ -55,9 +56,14 @@ HERO_YAW_DEG = 25.0
 CAMERA_NORMAL = "normal"
 CAMERA_TIGHT = "tight"
 CAMERA_NORMAL_ZOOM = 0.95
-CAMERA_TIGHT_ZOOM = 1.35
+CAMERA_TIGHT_ZOOM = 1.25
 GEMINI_LEAD_X = 420
 LLAMA_LEAD_X = 660
+TARGET_EYE_Y = PUPPET_MATRIX["target_eye_y"]
+TARGET_HEAD_HEIGHT = PUPPET_MATRIX["target_head_height"]
+LEGACY_ARTIST_V2_IDS = frozenset(
+    {"gemini_cyborg_v2", "llama_cyborg_v2"}
+)
 
 # -- Idle physics ----------------------------------------------------------- #
 _IDLE_GLOW = 0.10
@@ -118,6 +124,10 @@ class ShotReverseShotCompositor:
             )
             for speaker_id, rig in rigs.items()
         }
+        self._view_zoom = 1.0
+        self._view_zoom_start = 1.0
+        self._view_zoom_target = 1.0
+        self._view_zoom_frame = 4
         self._speaker_base: dict[str, dict[int, np.ndarray]] = {}
         for speaker_id, camera in self._camera.items():
             breathing_states: dict[int, np.ndarray] = {}
@@ -129,8 +139,8 @@ class ShotReverseShotCompositor:
                 _alpha_blend_paste(
                     frame,
                     camera.static_body,
-                    camera.offset_x,
-                    camera.offset_y + y_offset,
+                    camera.body_offset_x,
+                    camera.body_offset_y + y_offset,
                 )
                 breathing_states[y_offset] = frame
             self._speaker_base[speaker_id] = breathing_states
@@ -219,10 +229,16 @@ class ShotReverseShotCompositor:
         vignette = vignette.filter(ImageFilter.GaussianBlur(120))
         return Image.composite(img, Image.new("RGB", (w, h), (0, 0, 0)), vignette)
 
-    def _tight_view(self, frame: np.ndarray, anchor_x: int) -> np.ndarray:
-        """Apply the discrete 1.35x crop centered on the docked face."""
-        crop_w = int(round(self.width / CAMERA_TIGHT_ZOOM))
-        crop_h = int(round(self.height / CAMERA_TIGHT_ZOOM))
+    def _tight_view(
+        self,
+        frame: np.ndarray,
+        anchor_x: int,
+        *,
+        zoom: float = CAMERA_TIGHT_ZOOM,
+    ) -> np.ndarray:
+        """Apply a variable punch-in crop centered on the docked face."""
+        crop_w = int(round(self.width / zoom))
+        crop_h = int(round(self.height / zoom))
         left = int(np.clip(anchor_x - crop_w // 2, 0, self.width - crop_w))
         focal_y = int(round(self.height * 0.36))
         top = int(np.clip(focal_y - crop_h * 0.34, 0, self.height - crop_h))
@@ -232,6 +248,25 @@ class ShotReverseShotCompositor:
             (self.width, self.height),
             interpolation=cv2.INTER_LINEAR,
         )
+
+    def _update_view_zoom(self, camera_tight: bool) -> float:
+        """Cosine-ease between medium and 1.25x attack framing."""
+        target = CAMERA_TIGHT_ZOOM if camera_tight else 1.0
+        if abs(target - self._view_zoom_target) > 1e-6:
+            self._view_zoom_start = self._view_zoom
+            self._view_zoom_target = target
+            self._view_zoom_frame = 0
+        if self._view_zoom_frame < 4:
+            self._view_zoom_frame += 1
+            progress = self._view_zoom_frame / 4.0
+            eased = (1.0 - np.cos(np.pi * progress)) * 0.5
+            self._view_zoom = (
+                self._view_zoom_start
+                + (self._view_zoom_target - self._view_zoom_start) * eased
+            )
+        else:
+            self._view_zoom = self._view_zoom_target
+        return float(self._view_zoom)
 
     # -- Frame loop ------------------------------------------------------- #
     def iter_frames(self, analyzed: AnalyzedAudio) -> Iterator[np.ndarray]:
@@ -281,11 +316,10 @@ class ShotReverseShotCompositor:
 
             active_rms = float(_sequence_at(analyzed.rms, index, 0.0))
             emotion = _sequence_at(analyzed.emotion, index, "neutral")
-            camera_mode = dramatic_camera_mode(
-                camera_tight=bool(
-                    _sequence_at(analyzed.camera_tight, index, False)
-                )
+            camera_tight = bool(
+                _sequence_at(analyzed.camera_tight, index, False)
             )
+            view_zoom = self._update_view_zoom(camera_tight)
             camera = self._camera[current]
             breathing_y = camera.breathing_offset(t)
             frame = self._speaker_base[current][breathing_y].copy()
@@ -305,8 +339,12 @@ class ShotReverseShotCompositor:
                 emotion=emotion,
                 body_offset_y=breathing_y,
             )
-            if camera_mode == CAMERA_TIGHT:
-                frame = self._tight_view(frame, camera.lead_anchor_x)
+            if view_zoom > 1.001:
+                frame = self._tight_view(
+                    frame,
+                    camera.lead_anchor_x,
+                    zoom=view_zoom,
+                )
 
             yield frame
 
@@ -333,11 +371,17 @@ class _HeroCamera:
         self._emotion = "neutral"
         self._previous_emotion = "neutral"
         self._emotion_transition_frame = 3
+        self._brow_state = "neutral"
+        self._brow_start_angle = rig.brow_angle("neutral")
+        self._brow_target_angle = self._brow_start_angle
+        self._brow_angle = self._brow_start_angle
+        self._brow_transition_frame = 4
         self._overlay_cache: dict[
             tuple,
             tuple[np.ndarray, np.ndarray, int, int],
         ] = {}
         self.last_brow_state = "neutral"
+        self.last_brow_angle = self._brow_angle
 
         # Head and body were authored on one matching vertical canvas. Keep
         # that entire coordinate space intact: no top crop, no replicated
@@ -345,31 +389,158 @@ class _HeroCamera:
         crop_w, crop_h = rig.canvas_size
         self.crop = (0, 0, crop_w, crop_h)
 
-        # Exact-size art is a true passthrough. Other artist resolutions are
-        # uniformly contained once as a complete canvas.
-        scale = (
-            min(target_width / float(crop_w), target_height / float(crop_h))
-            * float(np.clip(zoom, 0.80, 1.60))
+        framing = rig.skin.framing or {}
+        legacy_artist_v2 = rig.skin.character_id in LEGACY_ARTIST_V2_IDS
+        parametric_v3 = (
+            rig.skin.character_id == "deepseek_cyborg_v3"
+            or bool(framing.get("puppet_matrix"))
         )
-        self.out_w = int(round(crop_w * scale))
-        self.out_h = int(round(crop_h * scale))
-        scale_x = self.out_w / float(crop_w)
-        scale_y = self.out_h / float(crop_h)
-        self.pixel_aspect_error = abs(scale_x - scale_y) / scale_x
-        if self.pixel_aspect_error > 0.001:
-            raise ValueError(
-                f"uniform camera scaling violated: x={scale_x:.6f}, y={scale_y:.6f}"
+        self._matrix_normalized = parametric_v3
+        production_framing = bool(framing.get("bottom_anchor")) or bool(
+            framing.get("full_bleed_torso")
+        ) or rig.skin.character_id in {
+            "gemini_cyborg_v2",
+            "llama_cyborg_v2",
+        }
+        if legacy_artist_v2:
+            # Immutable camera contract copied from 54b1b5d. Do not route V2
+            # artist cels through any V3 eye-line or proportion normalizer.
+            scale = min(
+                target_width / float(crop_w),
+                target_height / float(crop_h),
             )
-        self.scale_x = scale_x
-        self.scale_y = scale_y
+        elif parametric_v3:
+            body_alpha = rig.body_rgba[..., 3]
+            body_ys, body_xs = np.nonzero(body_alpha > 8)
+            body_bbox = (
+                int(body_xs.min()),
+                int(body_ys.min()),
+                int(body_xs.max()) + 1,
+                int(body_ys.max()) + 1,
+            ) if body_xs.size else (0, 0, crop_w, crop_h)
+            matrix = solve_puppet_matrix(
+                head_height=rig.framing_head_height,
+                eye_center=(
+                    (
+                        rig.skin.anchors.left_eye[0]
+                        + rig.skin.anchors.right_eye[0]
+                    )
+                    / 2.0,
+                    (
+                        rig.skin.anchors.left_eye[1]
+                        + rig.skin.anchors.right_eye[1]
+                    )
+                    / 2.0,
+                ),
+                neck_pivot=rig.skin.anchors.neck_pivot,
+                body_bbox=body_bbox,
+                canvas_size=rig.canvas_size,
+            )
+            matrix_ratio = target_height / 1920.0
+            scale = matrix.head_scale * matrix_ratio
+        elif production_framing:
+            scale = (
+                TARGET_HEAD_HEIGHT
+                * (target_height / 1920.0)
+                / float(rig.framing_head_height)
+            )
+        else:
+            # Keep the compatibility path for third-party artist matrices.
+            scale = (
+                min(target_width / float(crop_w), target_height / float(crop_h))
+                * float(np.clip(zoom, 0.80, 1.60))
+            )
+        native_eye_x = (
+            rig.skin.anchors.left_eye[0] + rig.skin.anchors.right_eye[0]
+        ) / 2.0
+        native_eye_y = (
+            rig.skin.anchors.left_eye[1] + rig.skin.anchors.right_eye[1]
+        ) / 2.0
         self.lead_anchor_x = lead_anchor_x(self.facing, target_width)
-        self.offset_x = int(round(self.lead_anchor_x - (self.out_w / 2.0)))
-        self.offset_y = target_height - self.out_h
+        dimension = round if legacy_artist_v2 else int
+        self.out_w = max(1, dimension(crop_w * scale))
+        self.out_h = max(1, dimension(crop_h * scale))
+        # One scalar drives canvas, anchors, head, body, eyes, mouth and brows.
+        # Integer output dimensions may differ by a sub-pixel rounding residue,
+        # but no layer is ever independently widened or heightened.
+        if legacy_artist_v2:
+            self.scale_x = self.out_w / float(crop_w)
+            self.scale_y = self.out_h / float(crop_h)
+            self.scale = self.scale_x
+        else:
+            self.scale = float(scale)
+            self.scale_x = self.scale
+            self.scale_y = self.scale
+        self.body_scale = self.scale
+        self.body_scale_x = self.scale
+        self.body_scale_y = self.scale
+        self.pixel_aspect_error = abs(self.scale_x - self.scale_y) / self.scale_x
+        if legacy_artist_v2:
+            self.offset_x = (target_width - self.out_w) // 2
+            self.lead_anchor_x = int(
+                round(self.offset_x + native_eye_x * self.scale)
+            )
+        elif parametric_v3:
+            width_ratio = target_width / 1080.0
+            self.offset_x = int(round(matrix.head_offset_x * width_ratio))
+            self.lead_anchor_x = int(
+                round(self.offset_x + native_eye_x * self.scale)
+            )
+        elif production_framing:
+            body_alpha = rig.body_rgba[..., 3]
+            _body_ys, body_xs = np.nonzero(body_alpha > 8)
+            native_body_center_x = (
+                float(body_xs.min() + body_xs.max() + 1) * 0.5
+                if body_xs.size
+                else native_eye_x
+            )
+            self.offset_x = int(
+                round((target_width * 0.5) - native_body_center_x * self.scale)
+            )
+            self.lead_anchor_x = int(
+                round(self.offset_x + native_eye_x * self.scale)
+            )
+        else:
+            self.offset_x = int(round(self.lead_anchor_x - (self.out_w / 2.0)))
+        if parametric_v3:
+            self.body_scale = matrix.body_scale * (target_width / 1080.0)
+            self.body_scale_x = self.body_scale
+            self.body_scale_y = self.body_scale
+            body_out_w = max(1, int(round(crop_w * self.body_scale)))
+            body_out_h = max(1, int(round(crop_h * self.body_scale)))
+        else:
+            body_out_w = self.out_w
+            body_out_h = self.out_h
         self.static_body = cv2.resize(
             self.rig.body_rgba,
-            (self.out_w, self.out_h),
+            (body_out_w, body_out_h),
             interpolation=cv2.INTER_AREA,
         )
+        if legacy_artist_v2:
+            self.offset_y = target_height - self.out_h
+        elif parametric_v3:
+            self.offset_y = int(
+                round(matrix.head_offset_y * (target_height / 1920.0))
+            )
+        else:
+            # Sit the last opaque body row on the frame foot. Transparent
+            # padding falls off-screen; nothing is painted over the PNG.
+            body_rows = np.nonzero(self.rig.body_rgba[..., 3] > 8)[0]
+            opaque_bottom = (
+                int(body_rows.max()) + 1 if body_rows.size else rig.canvas_size[1]
+            )
+            self.offset_y = int(round(target_height - opaque_bottom * self.scale))
+        if parametric_v3:
+            self.body_offset_x = int(
+                round(matrix.body_offset_x * (target_width / 1080.0))
+            )
+            self.body_offset_y = int(
+                round(matrix.body_offset_y * (target_height / 1920.0))
+            )
+        else:
+            self.body_offset_x = self.offset_x
+            self.body_offset_y = self.offset_y
+        self.eye_line_y = int(round(native_eye_y * self.scale_y + self.offset_y))
 
     @staticmethod
     def breathing_offset(t: float) -> int:
@@ -380,15 +551,24 @@ class _HeroCamera:
         key: tuple,
         overlay: np.ndarray,
         bbox: tuple[int, int, int, int],
+        *,
+        scale_x: float | None = None,
+        scale_y: float | None = None,
+        offset_x: int | None = None,
+        offset_y: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, int, int]:
         cached = self._overlay_cache.get(key)
         if cached is not None:
             return cached
+        resolved_scale_x = self.scale_x if scale_x is None else scale_x
+        resolved_scale_y = self.scale_y if scale_y is None else scale_y
+        resolved_offset_x = self.offset_x if offset_x is None else offset_x
+        resolved_offset_y = self.offset_y if offset_y is None else offset_y
         x0, y0, x1, y1 = bbox
-        out_x0 = int(round(x0 * self.scale_x))
-        out_y0 = int(round(y0 * self.scale_y))
-        out_x1 = int(round(x1 * self.scale_x))
-        out_y1 = int(round(y1 * self.scale_y))
+        out_x0 = int(round(x0 * resolved_scale_x))
+        out_y0 = int(round(y0 * resolved_scale_y))
+        out_x1 = int(round(x1 * resolved_scale_x))
+        out_y1 = int(round(y1 * resolved_scale_y))
         resized = cv2.resize(
             overlay,
             (max(1, out_x1 - out_x0), max(1, out_y1 - out_y0)),
@@ -404,8 +584,8 @@ class _HeroCamera:
         result = (
             premultiplied,
             cv2.bitwise_not(alpha_3ch),
-            self.offset_x + out_x0,
-            self.offset_y + out_y0,
+            resolved_offset_x + out_x0,
+            resolved_offset_y + out_y0,
         )
         self._overlay_cache[key] = result
         return result
@@ -427,8 +607,10 @@ class _HeroCamera:
         """Blit one articulated head crop onto a pre-baked breathing body."""
         self._update_emotion(emotion)
         brow_state = emotion_brow_state(self._emotion)
+        brow_angle = self._update_brow_angle(brow_state)
         brow_emphasized = bool(is_speaking and rms > brow_emphasis_threshold)
         self.last_brow_state = brow_state
+        self.last_brow_angle = brow_angle
         head_angle = self._update_head_angle(
             t=t,
             rms=rms,
@@ -440,6 +622,7 @@ class _HeroCamera:
             eye_state=eye_state,
             brow_state=brow_state,
             brow_emphasized=brow_emphasized,
+            brow_angle_deg=brow_angle,
             rest_mouth_state=emotion_rest_mouth_state(self._emotion),
             angle_deg=head_angle,
         )
@@ -451,6 +634,7 @@ class _HeroCamera:
                 (viseme or REST_VISEME).upper()[:1],
                 eye_state,
                 brow_state,
+                round(brow_angle, 2),
                 rest_state
                 if (viseme or REST_VISEME).upper()[:1] == REST_VISEME
                 else "",
@@ -466,6 +650,30 @@ class _HeroCamera:
             x,
             y + int(body_offset_y),
         )
+        collar = self.rig.collar_overlay()
+        if collar is not None and not self._matrix_normalized:
+            collar_crop, collar_bbox = collar
+            collar_rgb, collar_inv_alpha, collar_x, collar_y = self._scaled_overlay(
+                (
+                    "collar",
+                    round(self.body_scale_x, 6),
+                    self.body_offset_x,
+                    self.body_offset_y,
+                ),
+                collar_crop,
+                collar_bbox,
+                scale_x=self.body_scale_x,
+                scale_y=self.body_scale_y,
+                offset_x=self.body_offset_x,
+                offset_y=self.body_offset_y,
+            )
+            _alpha_blend_paste_precomputed(
+                frame,
+                collar_rgb,
+                collar_inv_alpha,
+                collar_x,
+                collar_y + int(body_offset_y),
+            )
 
     def render(
         self,
@@ -515,6 +723,27 @@ class _HeroCamera:
         if self._emotion_transition_frame < 3:
             self._emotion_transition_frame += 1
         return self._previous_emotion, self._emotion_transition_frame / 3.0
+
+    def _update_brow_angle(self, state: str) -> float:
+        """Cosine-ease brow slant to a new emotion over four frames."""
+        normalized = emotion_brow_state(state)
+        target = self.rig.brow_angle(normalized)
+        if normalized != self._brow_state or abs(target - self._brow_target_angle) > 1e-6:
+            self._brow_state = normalized
+            self._brow_start_angle = self._brow_angle
+            self._brow_target_angle = target
+            self._brow_transition_frame = 0
+        if self._brow_transition_frame < 4:
+            self._brow_transition_frame += 1
+            progress = self._brow_transition_frame / 4.0
+            eased = (1.0 - np.cos(np.pi * progress)) * 0.5
+            self._brow_angle = (
+                self._brow_start_angle
+                + (self._brow_target_angle - self._brow_start_angle) * eased
+            )
+        else:
+            self._brow_angle = self._brow_target_angle
+        return float(self._brow_angle)
 
     def _update_head_angle(
         self,
@@ -645,6 +874,8 @@ __all__ = [
     "CAMERA_TIGHT_ZOOM",
     "GEMINI_LEAD_X",
     "LLAMA_LEAD_X",
+    "TARGET_EYE_Y",
+    "TARGET_HEAD_HEIGHT",
     "lead_anchor_x",
     "HERO_CONTENT_WIDTH",
     "HERO_ELEVATION_PX",

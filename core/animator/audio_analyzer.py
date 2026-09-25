@@ -28,7 +28,8 @@ _LOG = logging.getLogger("animator.audio_analyzer")
 # Secondary-animation constants (per the video-pipeline spec).
 # --------------------------------------------------------------------------- #
 _BLINK_FIRST_CENTER_S = 1.5
-_BLINK_INTERVAL_S = 3.0
+_BLINK_INTERVAL_MIN_S = 3.2
+_BLINK_INTERVAL_MAX_S = 4.5
 
 _BREATH_HZ = 2.0  # rad/s multiplier: sin(t * 2.0)
 _BREATH_AMPLITUDE_PX = 3.0
@@ -133,7 +134,13 @@ class AudioAnalyzer:
             mouth_state[speaker][i] = self._quantize_mouth(rms_norm[i])
 
         eye_state: dict[str, list[int]] = {
-            sp: self._blink_schedule(n_frames, seed=self.seed)
+            sp: self._blink_schedule(
+                n_frames,
+                seed=self.seed + sum(
+                    (index + 1) * ord(character)
+                    for index, character in enumerate(sp)
+                ),
+            )
             for sp in speakers
         }
         self._apply_reaction_blinks(turns, eye_state, n_frames)
@@ -208,7 +215,7 @@ class AudioAnalyzer:
             center = int(round(center_s * self.fps))
             if center - 2 < 0 or center + 2 >= n_frames:
                 continue
-            states[center - 2 : center + 3] = [0, 1, 2, 1, 0]
+            states[center - 2 : center + 3] = [1, 1, 2, 1, 1]
 
     # -- RMS envelope -------------------------------------------------- #
     def _frame_rms(self, mono: np.ndarray, sample_rate: int, n_frames: int) -> np.ndarray:
@@ -249,19 +256,20 @@ class AudioAnalyzer:
 
     # -- Procedural blinking --------------------------------------------- #
     def _blink_schedule(self, n_frames: int, *, seed: int) -> list[int]:
-        del seed  # Deterministic broadcast cadence; retained for API compatibility.
+        rng = np.random.default_rng(int(seed))
         states = [0] * n_frames
         center = int(round(_BLINK_FIRST_CENTER_S * self.fps))
-        interval = int(round(_BLINK_INTERVAL_S * self.fps))
         while center + 2 < n_frames:
-            # Five-frame cel cycle centred on the requested proof timestamp:
-            # open -> half lid -> closed seam -> half lid -> open.
-            states[center - 2] = 0
+            # Two frames down, one closed, two up (~167 ms at 30 fps).
+            states[center - 2] = 1
             states[center - 1] = 1
             states[center] = 2
             states[center + 1] = 1
-            states[center + 2] = 0
-            center += interval
+            states[center + 2] = 1
+            interval_s = float(
+                rng.uniform(_BLINK_INTERVAL_MIN_S, _BLINK_INTERVAL_MAX_S)
+            )
+            center += max(1, int(round(interval_s * self.fps)))
         return states
 
 

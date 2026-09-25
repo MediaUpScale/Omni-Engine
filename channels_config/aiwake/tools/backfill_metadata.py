@@ -368,30 +368,27 @@ def build_caption(
     matchup = " vs ".join(part for part in (challenger.strip(), defender.strip()) if part)
     left = challenger.strip() or "AIWAKE.CORE"
     right = defender.strip() or "TARGET.NODE"
-    opener = (
-        f"{matchup} — two frontier large language models debate {subject} "
-        f"in an unscripted interrogation."
-        if matchup
-        else f"Two frontier AI models debate {subject} in an unscripted interrogation."
-    )
-    parts = [opener]
     question = first_question.rstrip()
-    if question:
-        q_line = question if question.endswith("?") else f"{question}."
-        parts.append(f"{left} opens: {q_line}")
-    answer = clip_text(first_answer, 280) if first_answer else ""
-    if answer:
-        parts.append(f"{right} answers: {answer}")
-    extras_q = [item for item in (extra_questions or ()) if item and item != first_question]
-    extras_a = [item for item in (extra_answers or ()) if item and item != first_answer]
-    if extras_q:
-        parts.append(f"{left} presses: {extras_q[0]}")
-    if extras_a:
-        parts.append(f"{right} holds: {clip_text(extras_a[0], 240)}")
-    # clusters / keywords stay in the signature for callers; never leak them
-    # into public copy (no "This Short is built for high-intent search…").
-    _ = (clusters, keywords, seed)
-    parts.append(YOUTUBE_DESCRIPTION_CTA)
+    if question and not question.endswith("?"):
+        question = f"{question}?"
+    answer = clip_text(first_answer, 180) if first_answer else ""
+    hook = question or f"What breaks when {left} corners {right}?"
+    summary = (
+        f"{left} and {right} run this live, with no script between them. "
+        f"The pressure is one question: {hook} "
+        f"{right} answers inside a narrower frame: {answer}"
+        if answer
+        else f"{left} and {right} run this live, with no script between them. The pressure is one question: {hook}"
+    )
+    # clusters / keywords / extra turns stay off the public description.
+    # A description is the dilemma, not a transcript dump.
+    _ = (clusters, keywords, seed, extra_questions, extra_answers, subject, matchup)
+    parts = [
+        f"{hook}\n{left} vs {right}. No script.",
+        summary.strip(),
+        f"👇 DEBATE QUESTION:\nWho took the stronger stance — {left} or {right}?",
+        f"🔔 {YOUTUBE_DESCRIPTION_CTA}",
+    ]
     tags = " ".join(tag for tag in hashtags if tag)
     if tags:
         parts.append(tags)

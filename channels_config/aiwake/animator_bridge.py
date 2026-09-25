@@ -159,8 +159,8 @@ _TARGET_PEAK = 0.92
 _INTENT_EMOTION = {
     "opens": "neutral",
     "answers": "confident",
-    "probes": "skeptical",
-    "questions": "skeptical",
+    "probes": "neutral",
+    "questions": "neutral",
     "skeptical": "skeptical",
     "presses": "inquisitor",
     "holds": "resolute",
@@ -454,6 +454,14 @@ def build_session_audio(
         ),
         None,
     )
+    final_orchestrator = next(
+        (
+            item
+            for item in reversed(transcript.utterances)
+            if item.role.value == "orchestrator"
+        ),
+        None,
+    )
     final_target_concedes = bool(
         final_target is not None
         and (
@@ -516,6 +524,18 @@ def build_session_audio(
         )
         prior_token = prior_words[0] if prior_words else ""
         emotion = resolve_dialectic_emotion(intent)
+        intent_token = (
+            str(intent or "")
+            .strip()
+            .lower()
+            .split(":", 1)[0]
+            .split(maxsplit=1)[0]
+        )
+        cornering_blow = (
+            utterance.role.value == "orchestrator"
+            and utterance is final_orchestrator
+            and intent_token == "presses"
+        )
         climax_concession = (
             utterance is final_target
             and final_target_concedes
@@ -572,7 +592,7 @@ def build_session_audio(
                     emotion=reaction_emotion,
                     speech_start_time=speech_start,
                     reaction_emotion=reaction_emotion,
-                    camera_tight=True,
+                    camera_tight=False,
                 )
             )
             camera_start = speech_start
@@ -586,7 +606,7 @@ def build_session_audio(
                 emotion=emotion,
                 speech_start_time=speech_start,
                 reaction_emotion=emotion if climax_concession else reaction_emotion,
-                camera_tight=False,
+                camera_tight=cornering_blow,
             )
         )
         segments.append(samples)

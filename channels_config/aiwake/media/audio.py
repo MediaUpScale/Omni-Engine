@@ -12,7 +12,8 @@ word-rate estimate, and never raises.
 
 Voice assignment is a lookup, not a pair of seat fields: :func:`resolve_voice`
 matches the speaking model's alias or slug against ``audio.voice_map`` (and the
-persona ``SEAT_VOICES`` fallback). The orchestrator seat is pinned to Andrew.
+persona ``SEAT_VOICES`` fallback). The Gemini orchestrator is pinned to its
+canonical Christopher voice.
 
 Typewriter clicks ride under AIWAKE.CORE (orchestrator) typing only, at
 ``gain_db`` (default -15 dB), for the character-reveal window — the same
@@ -70,7 +71,9 @@ _SAFE_NAME_RE = re.compile(r"[^a-z0-9]+")
 _ELLIPSIS_RE = re.compile(r"\.{3,}|…+")
 _DRAMATIC_BREAK_S = 1.5
 _CORE_ROLE = "orchestrator"
-CTA_VOICE = "en-US-BrianNeural"
+GEMINI_CANONICAL_VOICE = "en-US-BrianNeural"
+DEEPSEEK_CANONICAL_VOICE = "en-US-ChristopherNeural"
+CTA_VOICE = GEMINI_CANONICAL_VOICE
 _AIWAKE_WORD = re.compile(r"\bAiwake\b", re.IGNORECASE)
 
 # Tokens that do not distinguish one model family from another.
@@ -159,14 +162,15 @@ def resolve_voice(
 ) -> str:
     """Pick an edge-tts voice for a seat + model.
 
-    Orchestrator is always the ``orchestrator`` map entry (Andrew). Everyone
-    else is matched against alias keys in the map — exact substring first,
+    The Gemini orchestrator is hard-pinned to the first approved V2 voice so stale channel
+    configuration cannot silently replace the persona voice. Everyone else
+    is matched against alias keys in the map — exact substring first,
     then every meaningful token of the key present in the slug — so a live
     remap like ``google/gemini-3.5-flash`` still hits ``gemini-flash``.
     """
     mapping = {**SEAT_VOICES, **dict(config.voice_map)}
     if role is SpeakerRole.ORCHESTRATOR:
-        return mapping.get("orchestrator") or config.orchestrator_voice
+        return GEMINI_CANONICAL_VOICE
 
     needle = (model_slug or "").strip().lower()
     if needle in mapping:
@@ -197,10 +201,7 @@ def resolve_voice(
 
 def resolve_cta_voice(config: AudioConfig | None = None) -> str:
     """CTA uses the orchestrator seat voice, never a third neural."""
-    if config is None:
-        return CTA_VOICE
-    mapping = {**SEAT_VOICES, **dict(config.voice_map)}
-    return mapping.get("orchestrator") or config.orchestrator_voice or CTA_VOICE
+    return GEMINI_CANONICAL_VOICE
 
 
 # --------------------------------------------------------------------------- #

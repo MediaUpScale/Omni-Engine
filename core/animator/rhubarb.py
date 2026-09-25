@@ -130,6 +130,49 @@ def analyze_visemes(
     binary = ensure_rhubarb(allow_download=allow_download)
     if binary is None:
         return None
+    source_path = Path(audio_path)
+    analysis_path = source_path
+    transcoded_path: Path | None = None
+    if source_path.suffix.lower() not in {".wav", ".ogg"}:
+        transcoded_path = source_path.with_suffix(".rhubarb.wav")
+        try:
+            try:
+                import imageio_ffmpeg  # noqa: PLC0415
+
+                ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            except (ImportError, RuntimeError):
+                ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise FileNotFoundError("ffmpeg executable not found")
+            converted = subprocess.run(
+                [
+                    str(ffmpeg),
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(source_path),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    str(transcoded_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            if converted.returncode != 0 or not transcoded_path.is_file():
+                raise RuntimeError((converted.stderr or "ffmpeg failed")[-400:])
+            analysis_path = transcoded_path
+        except Exception as exc:  # noqa: BLE001 - envelope fallback is intentional
+            _LOG.warning(
+                "could not transcode %s for Rhubarb (%s); using envelope fallback",
+                source_path.name,
+                exc,
+            )
+            transcoded_path.unlink(missing_ok=True)
+            return None
 
     # Note: `-q` together with `--machineReadable` silences stdout entirely
     # (the cue list included), so neither is used. `--consoleLevel Error`
@@ -142,7 +185,7 @@ def analyze_visemes(
         "-r", "phonetic",
         "--extendedShapes", "GHX",
         "--consoleLevel", "Error",
-        str(audio_path),
+        str(analysis_path),
     ]
     dialog_file: Path | None = None
     if dialog_text.strip():
@@ -163,6 +206,8 @@ def analyze_visemes(
     finally:
         if dialog_file is not None:
             dialog_file.unlink(missing_ok=True)
+        if transcoded_path is not None:
+            transcoded_path.unlink(missing_ok=True)
 
     if proc.returncode != 0:
         _LOG.warning("Rhubarb exited %d on %s: %s", proc.returncode, audio_path.name, (proc.stderr or "")[-400:])

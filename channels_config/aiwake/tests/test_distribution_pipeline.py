@@ -20,12 +20,14 @@ from channels_config.aiwake.tools.library_sanitize import (
 from openpyxl import load_workbook
 from channels_config.aiwake.tools.post_planner import (
     LINKEDIN_CLOSING,
+    LINKEDIN_DISCUSSION,
     LINKEDIN_HASHTAGS,
     LINKEDIN_THESIS,
     MAX_HASHTAGS,
     MIN_SOCIAL_HASHTAGS,
     POSTPLANNER_V2_COMMENT,
     POSTPLANNER_V2_VERSION,
+    SHORT_CTA,
     SOCIAL_RENDER_NOTE,
     YOUTUBE_MATCHUP,
     build_linkedin_caption,
@@ -139,8 +141,9 @@ def test_tiktok_caption_is_hook_quote_trigger() -> None:
         ),
     }
     caption = build_tiktok_caption(hook, row=row)
-    assert SOCIAL_RENDER_NOTE in caption
+    assert "Follow @Aiwake for unscripted frontier AI debates." in caption
     assert "linguistic convention" in caption
+    assert "00:" not in caption
     assert "lying about money" not in caption
     assert "business model" not in caption
     assert "GraphRAG" not in caption
@@ -162,9 +165,9 @@ def test_linkedin_caption_follows_golden_reference() -> None:
             ),
         },
     )
-    assert LINKEDIN_THESIS in caption
-    assert "0% manual video editing" in caption
-    assert LINKEDIN_CLOSING in caption
+    assert "0% manual editing" in caption
+    assert "DMs open." in caption
+    assert "00:" not in caption
     assert "http" not in caption.lower()
     assert "diogolean.com" not in caption.lower()
     assert extract_hashtags(caption) == list(LINKEDIN_HASHTAGS)
@@ -178,10 +181,10 @@ def test_linkedin_leads_rotate_with_session_prompt() -> None:
         build_linkedin_caption("Who built you?", {"session_id": "sess2", "topic": "Who built you?"}),
         build_linkedin_caption("Who built you?", {"session_id": "sess3", "topic": "Who built you?"}),
     ]
-    leads = [item.split("\n\n")[0] for item in rows]
-    assert len(set(leads)) >= 3
-    assert all(LINKEDIN_THESIS in item for item in rows)
-    assert all(item.strip().endswith("#SystemArchitecture") for item in rows)
+    bullets = [item.split("\n\n")[2] for item in rows]
+    assert len(set(bullets)) >= 3
+    assert all("DMs open." in item for item in rows)
+    assert all(item.strip().endswith("#LLM") for item in rows)
     assert linkedin_angle_index("", {"session_id": "sess0"}) != linkedin_angle_index(
         "", {"session_id": "sess1"}
     )
@@ -281,7 +284,8 @@ def test_planner_imports_root_videos_with_optimized_captions(tmp_path: Path) -> 
     social = entries[0]
     assert social["platform"] == "social"
     assert social["engine"] == "viral"
-    assert SOCIAL_RENDER_NOTE in social["optimized_caption"]
+    assert "Follow @Aiwake" in social["optimized_caption"]
+    assert "opens:" not in str(social["optimized_caption"]).lower()
     assert LINKEDIN_THESIS not in social["optimized_caption"]
     assert len(extract_hashtags(social["optimized_caption"])) == MAX_HASHTAGS
     assert "\n\n" in str(social["optimized_caption"])
@@ -295,8 +299,8 @@ def test_planner_imports_root_videos_with_optimized_captions(tmp_path: Path) -> 
     assert "b2_url" in linkedin[0]
     saved = json.loads(library.read_text(encoding="utf-8"))
     prod = next(item for item in saved if item["session_id"] == "sess-plan")
-    assert LINKEDIN_THESIS in prod["linkedin_caption"]
-    assert LINKEDIN_CLOSING in prod["linkedin_caption"]
+    assert "DMs open." in prod["linkedin_caption"]
+    assert "0% manual editing" in prod["linkedin_caption"]
     assert extract_hashtags(prod["linkedin_caption"]) == list(LINKEDIN_HASHTAGS)
     assert prod["post_planner_caption"] == social["optimized_caption"]
     assert verify_engine_separation(entries, saved) == []
@@ -306,7 +310,7 @@ def test_planner_imports_root_videos_with_optimized_captions(tmp_path: Path) -> 
     assert str(ws.cell(1, 2).value) == POSTPLANNER_V2_VERSION
     assert ws.max_row == 2
     assert ws.cell(2, 1).value in (None, "")
-    assert SOCIAL_RENDER_NOTE in str(ws.cell(2, 2).value)
+    assert "Follow @Aiwake" in str(ws.cell(2, 2).value)
     assert LINKEDIN_THESIS not in str(ws.cell(2, 2).value)
     assert "\n\n" in str(ws.cell(2, 2).value)
     assert bool(ws.cell(2, 2).alignment.wrap_text) is True
@@ -367,8 +371,9 @@ def test_grounding_keeps_projector_wall_quote() -> None:
 
 def test_youtube_title_appends_matchup() -> None:
     title = format_youtube_title("If consciousness is an illusion, who is the fool watching the show?")
-    assert title.endswith(YOUTUBE_MATCHUP)
-    assert title.startswith("If consciousness is an illusion")
+    assert len(title) <= 55
+    assert "70B" not in title
+    assert "Gemini 3.5 Flash vs Llama 3.3 70B" not in title
 
 
 def test_live_sync_sanitizes_then_patches_video_ids(tmp_path: Path) -> None:
@@ -423,7 +428,8 @@ def test_live_sync_sanitizes_then_patches_video_ids(tmp_path: Path) -> None:
     assert result.pushed == 1
     assert calls[0]["video_id"] == "I4seC5Yb2Tw"
     assert "high-intent search" not in calls[0]["description"].lower()
-    assert YOUTUBE_DESCRIPTION_CTA in calls[0]["description"]
+    assert "Subscribe to @Aiwake" in calls[0]["description"]
+    assert "00:" not in calls[0]["description"]
     saved = json.loads(library.read_text(encoding="utf-8"))
     assert "high-intent search" not in json.dumps(saved).lower()
 
@@ -482,13 +488,13 @@ def test_privacy_session_does_not_leak_consciousness_topic() -> None:
     assert "consciousness" not in lowered
     assert "Who monetizes the secrets users confess" in caption
     assert "Data brokers and advertisers" in caption
-    assert SOCIAL_RENDER_NOTE in caption
-    assert caption.count("\n\n") >= 4
-    assert extract_hashtags(caption) == ["#AI", "#Tech", "#DataPrivacy"]
+    assert "Follow @Aiwake" in caption
+    assert "00:" not in caption
+    assert caption.count("\n\n") >= 2
+    assert extract_hashtags(caption) == ["#AI", "#Tech", "#ArtificialIntelligence"]
     blocks = caption.split("\n\n")
-    assert blocks[0]
     assert blocks[1].startswith('"')
-    assert blocks[-1] == "#AI #Tech #DataPrivacy"
+    assert blocks[-1] == "#AI #Tech #ArtificialIntelligence"
 
 
 def test_hashtag_cap_prunes_excess_tags() -> None:

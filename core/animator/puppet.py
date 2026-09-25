@@ -77,15 +77,15 @@ _EYE_LAYER_BY_STATE = {0: "eyes_open", 1: "eyes_half", 2: "eyes_blink"}
 #: 3-level mouth instead of a phonetic track.
 _STATE_VISEME = {0: "A", 1: "C", 2: "D"}
 _EMOTION_BROW_ANGLES = {
-    "skeptical": (14.0, -14.0),
+    "skeptical": (12.0, -12.0),
     "neutral": (0.0, 0.0),
-    "inquisitor": (-16.0, 16.0),
+    "inquisitor": (-5.5, 5.5),
     "resolute": (0.0, 0.0),
-    "conceded": (14.0, -14.0),
-    "defeated": (14.0, -14.0),
-    "disbelief": (14.0, -14.0),
-    "troubled": (14.0, -14.0),
-    "concerned": (14.0, -14.0),
+    "conceded": (12.0, -12.0),
+    "defeated": (12.0, -12.0),
+    "disbelief": (12.0, -12.0),
+    "troubled": (12.0, -12.0),
+    "concerned": (12.0, -12.0),
 }
 BROW_STATES: tuple[str, ...] = (
     "neutral",
@@ -93,6 +93,7 @@ BROW_STATES: tuple[str, ...] = (
     "inquisitor",
     "resolute",
     "conceded",
+    "troubled",
 )
 
 
@@ -110,14 +111,10 @@ def emotion_brow_angles(emotion: str, pulse_deg: float = 0.0) -> tuple[float, fl
 
 def emotion_brow_state(emotion: str) -> str:
     state = (emotion or "neutral").strip().lower()
-    if state in {
-        "defeated",
-        "stressed",
-        "disbelief",
-        "troubled",
-        "concerned",
-    }:
+    if state in {"defeated", "stressed"}:
         return "conceded"
+    if state in {"disbelief", "troubled", "concerned"}:
+        return "troubled"
     return state if state in BROW_STATES else "neutral"
 
 
@@ -143,6 +140,10 @@ class PuppetSkin:
     lens_circles: tuple[tuple[float, float, float], ...] = ()
     mouth_style: str = "ghibli_mecha"
     palette: dict[str, str] | None = None
+    skin_version: str = "unversioned"
+    eye_style: str = "circular"
+    brow_config: dict | None = None
+    framing: dict | None = None
 
     @classmethod
     def load(cls, puppet_dir: Path) -> "PuppetSkin":
@@ -153,19 +154,34 @@ class PuppetSkin:
 
     @classmethod
     def load_or_create(cls, puppet_dir: Path) -> "PuppetSkin":
-        """Load an existing skin, or synthesize a default manifest + assets.
+        """Load an artist skin, auto-rig raw art, or synthesize a fallback.
 
         This is the entry point most callers want: it guarantees a fully
         usable, on-disk puppet directory (manifest *and* PNG layers) no
         matter what was there before.
         """
-        from .asset_generator import ensure_puppet_manifest  # noqa: PLC0415
-
         puppet_dir = Path(puppet_dir)
         manifest_path = puppet_dir / "puppet.json"
-        if not manifest_path.is_file():
-            _LOG.info("no puppet.json at %s — generating a default skin", puppet_dir)
-        ensure_puppet_manifest(puppet_dir)
+        if manifest_path.is_file():
+            # Artist mode has absolute priority. In particular, do not call
+            # the legacy manifest upgrader, which rewrites calibrated JSON.
+            skin = cls.load(puppet_dir)
+            skin.ensure_assets()
+            return skin
+
+        from .factory.rigger import (  # noqa: PLC0415
+            auto_rig_character,
+            has_character_imagery,
+        )
+
+        if has_character_imagery(puppet_dir):
+            _LOG.info("no puppet.json at %s — invoking V3 auto-rigger", puppet_dir)
+            auto_rig_character(puppet_dir, puppet_dir.name)
+        else:
+            from .asset_generator import ensure_puppet_manifest  # noqa: PLC0415
+
+            _LOG.info("no character art at %s — generating a default skin", puppet_dir)
+            ensure_puppet_manifest(puppet_dir)
         skin = cls.load(puppet_dir)
         skin.ensure_assets()
         return skin
@@ -262,6 +278,8 @@ class PuppetSkin:
             "glow": resolve_file("glow"),
             "bg": resolve_file("bg"),
         }
+        if raw_layers.get("collar"):
+            layer_files["collar"] = str(raw_layers["collar"])
         for viseme in VISEMES:
             key = viseme_layer_key(viseme)
             layer_files[key] = resolve_file(key)
@@ -291,6 +309,10 @@ class PuppetSkin:
             lens_circles=lens_circles,
             mouth_style=str(data.get("mouth_style") or "ghibli_mecha"),
             palette=palette,
+            skin_version=str(data.get("skin_version") or "unversioned"),
+            eye_style=str(data.get("eye_style") or "circular"),
+            brow_config=dict(data.get("brows") or {}),
+            framing=dict(data.get("framing") or {}),
         )
 
     def layer_path(self, key: str) -> Path:
@@ -339,6 +361,8 @@ class PuppetRig:
         layers: dict[str, Image.Image] = {
             key: Image.open(skin.layer_path(key)).convert("RGBA") for key in LAYER_KEYS
         }
+        if "collar" in skin.layer_files and skin.layer_path("collar").is_file():
+            layers["collar"] = Image.open(skin.layer_path("collar")).convert("RGBA")
         for viseme in VISEMES:
             key = viseme_layer_key(viseme)
             layers[key] = Image.open(skin.layer_path(key)).convert("RGBA")
@@ -369,6 +393,15 @@ class PuppetRig:
         self.background = layers["bg"]
         self._body = np.asarray(layers["body"], dtype=np.uint8).copy()
         self._body_rgba = self._body
+        collar_layer = layers.get(
+            "collar",
+            Image.new("RGBA", self.canvas_size, (0, 0, 0, 0)),
+        )
+        self._collar_rgba = np.asarray(collar_layer, dtype=np.uint8).copy()
+        self._collar_bbox = _alpha_bbox(
+            self._collar_rgba[..., 3].astype(np.float32),
+            pad=3,
+        )
         static_stack = Image.new("RGBA", self.canvas_size, (0, 0, 0, 0))
         static_stack.alpha_composite(layers["body"])
         static_stack.alpha_composite(layers["head"])
@@ -422,6 +455,18 @@ class PuppetRig:
         bare_head.alpha_composite(layers["head"])
         bare_head.alpha_composite(layers["eyes_open"])
         self._bare_head = np.asarray(bare_head, dtype=np.uint8).copy()
+        self._head_content_bbox = _alpha_bbox(
+            self._bare_head[..., 3].astype(np.float32),
+        )
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            np.where(self._bare_head[..., 3] > 8, 255, 0).astype(np.uint8),
+            connectivity=8,
+        )
+        if component_count > 1:
+            largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            self._head_crown_y = int(stats[largest, cv2.CC_STAT_TOP])
+        else:
+            self._head_crown_y = self._head_content_bbox[1]
         for state in REST_MOUTH_STATES:
             mouth = np.asarray(
                 layers[rest_mouth_layer_key(state)],
@@ -432,13 +477,28 @@ class PuppetRig:
             self._rest_mouth_crop[state] = (mouth[y0:y1, x0:x1].copy(), bbox)
 
         ref_w, ref_h = self.skin.reference_canvas_size
-        scale_x = self.canvas_size[0] / float(max(1, ref_w))
-        scale_y = self.canvas_size[1] / float(max(1, ref_h))
+        reference_scale = min(
+            self.canvas_size[0] / float(max(1, ref_w)),
+            self.canvas_size[1] / float(max(1, ref_h)),
+        )
+        reference_offset_x = (
+            self.canvas_size[0] - ref_w * reference_scale
+        ) * 0.5
+        reference_offset_y = (
+            self.canvas_size[1] - ref_h * reference_scale
+        ) * 0.5
+
+        def reference_x(value: float) -> float:
+            return float(value) * reference_scale + reference_offset_x
+
+        def reference_y(value: float) -> float:
+            return float(value) * reference_scale + reference_offset_y
+
         self._raw_lens_circles = tuple(
             (
-                float(cx) * scale_x,
-                float(cy) * scale_y,
-                float(radius) * ((scale_x + scale_y) * 0.5),
+                reference_x(cx),
+                reference_y(cy),
+                float(radius) * reference_scale,
             )
             for cx, cy, radius in self.skin.lens_circles
         )
@@ -449,6 +509,15 @@ class PuppetRig:
                 radius,
             )
             for index, (cx, cy, radius) in enumerate(self._raw_lens_circles)
+        )
+        self._eye_bboxes = tuple(
+            (
+                int(round(reference_x(x0))),
+                int(round(reference_y(y0))),
+                int(round(reference_x(x1))),
+                int(round(reference_y(y1))),
+            )
+            for x0, y0, x1, y1 in self.skin.eye_bboxes
         )
         self._eye_overlay: dict[int, np.ndarray] = {}
         self._eye_bbox: dict[int, tuple[int, int, int, int]] = {}
@@ -472,21 +541,21 @@ class PuppetRig:
         )
 
         self._pivot = (
-            int(round(self.skin.anchors.head_pivot[0] * scale_x)),
-            int(round(self.skin.anchors.head_pivot[1] * scale_y)),
+            int(round(reference_x(self.skin.anchors.head_pivot[0]))),
+            int(round(reference_y(self.skin.anchors.head_pivot[1]))),
         )
         self._neck_pivot = (
-            int(round(self.skin.anchors.neck_pivot[0] * scale_x)),
-            int(round(self.skin.anchors.neck_pivot[1] * scale_y)),
+            int(round(reference_x(self.skin.anchors.neck_pivot[0]))),
+            int(round(reference_y(self.skin.anchors.neck_pivot[1]))),
         )
         self._eye_centers = (
             (
-                int(round(self.skin.anchors.left_eye[0] * scale_x)),
-                int(round(self.skin.anchors.left_eye[1] * scale_y)),
+                int(round(reference_x(self.skin.anchors.left_eye[0]))),
+                int(round(reference_y(self.skin.anchors.left_eye[1]))),
             ),
             (
-                int(round(self.skin.anchors.right_eye[0] * scale_x)),
-                int(round(self.skin.anchors.right_eye[1] * scale_y)),
+                int(round(reference_x(self.skin.anchors.right_eye[0]))),
+                int(round(reference_y(self.skin.anchors.right_eye[1]))),
             ),
         )
         self._eye_radius = max(
@@ -494,21 +563,12 @@ class PuppetRig:
             int(
                 round(
                     self.skin.anchors.eye_radius
-                    * ((scale_x + scale_y) * 0.5)
+                    * reference_scale
                 )
             ),
         )
-        self._eye_bboxes = tuple(
-            (
-                int(round(x0 * scale_x)),
-                int(round(y0 * scale_y)),
-                int(round(x1 * scale_x)),
-                int(round(y1 * scale_y)),
-            )
-            for x0, y0, x1, y1 in self.skin.eye_bboxes
-        )
         self._brow_cache: dict[
-            str,
+            tuple[str, float],
             tuple[np.ndarray, tuple[int, int, int, int]] | None,
         ] = {}
         self._articulated_head_cache: OrderedDict[
@@ -599,6 +659,11 @@ class PuppetRig:
             head,
             self._head_bbox[shape],
         )
+        frame = _alpha_composite_rgba(
+            frame,
+            self._collar_rgba,
+            self._collar_bbox,
+        )
 
         if abs(brightness - 1.0) > 0.001:
             frame = frame.copy()
@@ -630,6 +695,28 @@ class PuppetRig:
         """Immutable body plane used beneath the articulated head crop."""
         return self._body_rgba
 
+    @property
+    def head_content_bbox(self) -> tuple[int, int, int, int]:
+        """Tight native-pixel bounds used for consistent camera framing."""
+        return self._head_content_bbox
+
+    @property
+    def framing_head_height(self) -> int:
+        """Visible crown-to-chin height, excluding the hidden neck socket."""
+        mouth_y = float(self.skin.anchors.mouth[1])
+        neck_y = float(self.skin.anchors.neck_pivot[1])
+        inferred_chin_y = mouth_y + max(0.0, neck_y - mouth_y) * 0.35
+        return max(1, int(round(inferred_chin_y - self._head_crown_y)))
+
+    def collar_overlay(
+        self,
+    ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+        """Optional collar armor composited after the articulated head."""
+        if "collar" not in self.skin.layer_files:
+            return None
+        x0, y0, x1, y1 = self._collar_bbox
+        return self._collar_rgba[y0:y1, x0:x1], self._collar_bbox
+
     def mouth_overlay(
         self,
         viseme: str,
@@ -652,14 +739,52 @@ class PuppetRig:
         return head
 
     def _stencil_to_lenses(self, overlay: np.ndarray) -> np.ndarray:
-        """Zero every eyelid pixel that falls outside a lens circle."""
+        """Clip eyelid metal to calibrated circular or pill-shaped optics."""
         if overlay.shape[2] < 4 or not self._lens_circles:
             return overlay
         height, width = overlay.shape[:2]
-        grid_y, grid_x = np.ogrid[:height, :width]
-        keep = np.zeros((height, width), dtype=bool)
-        for cx, cy, radius in self._lens_circles:
-            keep |= (grid_x + 0.5 - cx) ** 2 + (grid_y + 0.5 - cy) ** 2 <= radius * radius
+        keep_u8 = np.zeros((height, width), dtype=np.uint8)
+        use_pills = (
+            self.skin.eye_style == "circular_slit"
+            and len(self._eye_bboxes) >= len(self._lens_circles)
+        )
+        if use_pills:
+            for x0, y0, x1, y1 in self._eye_bboxes[: len(self._lens_circles)]:
+                box_w = max(1, x1 - x0)
+                box_h = max(1, y1 - y0)
+                radius = max(1, min(box_w, box_h) // 2)
+                cy = (y0 + y1) // 2
+                if box_w > box_h:
+                    cv2.rectangle(
+                        keep_u8,
+                        (x0 + radius, y0),
+                        (x1 - radius, y1),
+                        255,
+                        thickness=cv2.FILLED,
+                    )
+                    cv2.circle(keep_u8, (x0 + radius, cy), radius, 255, -1)
+                    cv2.circle(keep_u8, (x1 - radius, cy), radius, 255, -1)
+                else:
+                    cv2.ellipse(
+                        keep_u8,
+                        ((x0 + x1) // 2, cy),
+                        (box_w // 2, box_h // 2),
+                        0,
+                        0,
+                        360,
+                        255,
+                        thickness=cv2.FILLED,
+                    )
+            keep = keep_u8 > 0
+        else:
+            grid_y, grid_x = np.ogrid[:height, :width]
+            keep = np.zeros((height, width), dtype=bool)
+            for cx, cy, radius in self._lens_circles:
+                keep |= (
+                    (grid_x + 0.5 - cx) ** 2
+                    + (grid_y + 0.5 - cy) ** 2
+                    <= radius * radius
+                )
         if bool(keep.all()):
             return overlay
         clipped = overlay.copy()
@@ -713,25 +838,47 @@ class PuppetRig:
         self,
         state: str,
         emphasized: bool = False,
+        angle_override: float | None = None,
     ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
-        return self._brow_overlay(state, emphasized)
+        return self._brow_overlay(state, emphasized, angle_override)
+
+    def brow_angle(self, state: str) -> float:
+        """Return the manifest-convention scalar brow angle for one state."""
+        brow_state = emotion_brow_state(state)
+        configured = (self.skin.brow_config or {}).get("angles") or {}
+        if brow_state in configured:
+            return float(configured[brow_state])
+        if brow_state == "inquisitor":
+            return -5.5
+        if brow_state in {"conceded", "skeptical", "troubled"}:
+            return 12.0
+        return 0.0
 
     def _brow_overlay(
         self,
         state: str,
         emphasized: bool = False,
+        angle_override: float | None = None,
     ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
         """Build anti-aliased brow bars locked to the optical-lens rims."""
         brow_state = emotion_brow_state(state)
-        key = brow_state
+        brow_angle = (
+            self.brow_angle(brow_state)
+            if angle_override is None
+            else float(angle_override)
+        )
+        key = (brow_state, round(brow_angle, 2))
         if key in self._brow_cache:
             return self._brow_cache[key]
         if len(self._eye_centers) < 2:
             self._brow_cache[key] = None
             return None
 
+        brow_config = self.skin.brow_config or {}
         ink_hex = str(
-            (self.skin.palette or {}).get("ink_outline") or "#152026"
+            brow_config.get("ink_color")
+            or (self.skin.palette or {}).get("ink_outline")
+            or "#152026"
         ).lstrip("#")
         try:
             outline = (
@@ -744,7 +891,12 @@ class PuppetRig:
             outline = (21, 32, 38, 255)
         layer = Image.new("RGBA", self.canvas_size, (0, 0, 0, 0))
         for index, (eye_x, eye_y) in enumerate(self._eye_centers[:2]):
-            bar_w = max(48, int(round(self._eye_radius * 1.45)))
+            configured_width = brow_config.get("width_px")
+            bar_w = (
+                max(24, int(round(float(configured_width))))
+                if configured_width is not None
+                else max(48, int(round(self._eye_radius * 1.45)))
+            )
             scale = 4
             pad = 36
             patch_h = max(52, int(round(self._eye_radius * 0.70)))
@@ -759,12 +911,13 @@ class PuppetRig:
             center = float((pad + patch_h // 2) * scale)
             inner_is_right = index == 0
 
-            if brow_state == "inquisitor":
-                inner_delta = np.tan(np.deg2rad(16.0)) * bar_w * scale
-            elif brow_state in {"conceded", "skeptical"}:
-                inner_delta = -np.tan(np.deg2rad(14.0)) * bar_w * scale
-            else:
-                inner_delta = 0.0
+            # Manifest convention: negative = acute attack (\ /),
+            # positive = troubled/defeated (/ \).
+            inner_delta = (
+                -np.tan(np.deg2rad(brow_angle))
+                * bar_w
+                * scale
+            )
             inner_y = center + inner_delta
             outer_point = (left, center)
             inner_point = (right, inner_y)
@@ -780,6 +933,8 @@ class PuppetRig:
                 stroke_px = 9.5
             elif is_gemini:
                 stroke_px = 7.5
+            elif brow_config.get("style") == "acute_mecha":
+                stroke_px = float(brow_config.get("stroke_width_px") or 5.5)
             else:
                 stroke_px = 5.5
             ink_width = max(1, int(round(stroke_px * scale)))
@@ -798,7 +953,12 @@ class PuppetRig:
                 (bar_w + pad * 2, patch_h + pad * 2),
                 Image.Resampling.LANCZOS,
             )
-            brow_y = eye_y - self._eye_radius - 4
+            if index < len(self._eye_bboxes):
+                brow_y = self._eye_bboxes[index][1] - int(
+                    round(float(brow_config.get("gap_px") or 4))
+                )
+            else:
+                brow_y = eye_y - self._eye_radius - 4
             x_nudge = 0
             y_nudge = 0
             if is_gemini and index == 1:
@@ -829,18 +989,31 @@ class PuppetRig:
         eye_state: int,
         brow_state: str,
         brow_emphasized: bool,
-        rest_mouth_state: str | None = None,
         angle_deg: float,
+        brow_angle_deg: float | None = None,
+        rest_mouth_state: str | None = None,
     ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
         """Return a cached, neck-pivoted head crop with all facial sprites attached."""
         shape = (viseme or REST_VISEME).upper()[:1]
         if shape not in self._head_stack:
             shape = REST_VISEME
         state = emotion_brow_state(brow_state)
-        angle = float(np.clip(round(float(angle_deg) / 0.3) * 0.3, -1.2, 1.2))
+        angle = float(np.clip(round(float(angle_deg) / 0.3) * 0.3, -1.5, 1.5))
         rest_state = rest_mouth_state or emotion_rest_mouth_state(brow_state)
         cache_rest_state = rest_state if shape == REST_VISEME else ""
-        cache_key = (shape, int(eye_state), state, cache_rest_state, angle)
+        resolved_brow_angle = (
+            self.brow_angle(state)
+            if brow_angle_deg is None
+            else float(brow_angle_deg)
+        )
+        cache_key = (
+            shape,
+            int(eye_state),
+            state,
+            round(resolved_brow_angle, 2),
+            cache_rest_state,
+            angle,
+        )
         cached = self._articulated_head_cache.get(cache_key)
         if cached is not None:
             self._articulated_head_cache.move_to_end(cache_key)
@@ -857,7 +1030,11 @@ class PuppetRig:
                 self._eye_overlay[eye_state],
                 self._eye_bbox[eye_state],
             )
-        brow = self._brow_overlay(state, brow_emphasized)
+        brow = self._brow_overlay(
+            state,
+            brow_emphasized,
+            resolved_brow_angle,
+        )
         if brow is not None:
             head = _alpha_composite_crop(head, brow[0], brow[1])
 
@@ -910,7 +1087,8 @@ class PuppetRig:
 
     def _apply_scale(self, arr: np.ndarray, factor: float) -> np.ndarray:
         w, h = self.canvas_size
-        new_w, new_h = max(1, int(round(w * factor))), max(1, int(round(h * factor)))
+        new_w = max(1, int(w * factor))
+        new_h = max(1, int(h * factor))
         resized = cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         out = np.zeros((h, w, 4), dtype=np.uint8)
         # Keep the head-pivot anchor visually stationary while the puppet
@@ -965,8 +1143,8 @@ def _contain_rgba(image: Image.Image, canvas_size: tuple[int, int]) -> Image.Ima
     """Uniformly contain an auxiliary layer without changing pixel aspect."""
     target_w, target_h = canvas_size
     scale = min(target_w / float(image.width), target_h / float(image.height))
-    width = max(1, int(round(image.width * scale)))
-    height = max(1, int(round(image.height * scale)))
+    width = max(1, int(image.width * scale))
+    height = max(1, int(image.height * scale))
     resized = image.resize((width, height), Image.Resampling.LANCZOS)
     canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
     canvas.alpha_composite(

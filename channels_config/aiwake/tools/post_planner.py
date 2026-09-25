@@ -155,7 +155,14 @@ LINKEDIN_BULLET_ARCH = (
     "• Architecture: GraphRAG context isolation + sub-10ms event bus telemetry."
 )
 LINKEDIN_CLOSING = "Full system architecture and telemetry ledger stay inside the Aiwake engine."
-LINKEDIN_HASHTAGS: tuple[str, ...] = ("#MultiAgentSystems", "#LLM", "#SystemArchitecture")
+LINKEDIN_DISCUSSION = (
+    "How are you approaching LLM-to-LLM orchestration in your pipeline? "
+    "Let's discuss in the comments."
+)
+LINKEDIN_HASHTAGS: tuple[str, ...] = ("#AI", "#MachineLearning", "#LLM")
+SHORT_CTA = "Who won this round? Comment below 👇"
+YOUTUBE_DEBATE_HEADER = "👇 DEBATE QUESTION:"
+YOUTUBE_CHAPTER_HEADER = "⏱️ CHAPTERS:"
 LINKEDIN_SYSTEM = LINKEDIN_THESIS
 LINKEDIN_PROOF = LINKEDIN_BULLET_EDIT
 
@@ -568,14 +575,20 @@ def load_dialogue(row: dict[str, Any]) -> dict[str, Any]:
                 text = _clean_spoken(str(item.get("text") or ""))
                 if not text:
                     continue
+                duration = item.get("audio_duration_s")
                 utterances.append(
                     {
                         "role": str(item.get("role") or "").strip().lower(),
                         "speaker": str(item.get("speaker_name") or item.get("role") or "").strip(),
                         "text": text,
                         "category": str(item.get("provocation_category") or "").strip().lower(),
+                        "audio_duration_s": duration if isinstance(duration, (int, float)) else 0,
                     }
                 )
+    if not utterances:
+        cached = row.get("spoken_utterances")
+        if isinstance(cached, list):
+            utterances = [item for item in cached if isinstance(item, dict) and item.get("text")]
     if not utterances:
         for line in _dialogue_source_text(row).splitlines():
             match = _SPEAKER_LINE_RE.match(line.strip())
@@ -610,6 +623,8 @@ def load_dialogue(row: dict[str, Any]) -> dict[str, Any]:
         corpus=corpus,
         spoken_category=spoken_category,
     )
+    if utterances:
+        row["spoken_utterances"] = utterances
     return {
         "utterances": utterances,
         "opening": opening,
@@ -830,32 +845,122 @@ def linkedin_orchestration(row: dict[str, Any]) -> str:
 
 
 def format_youtube_title(question: str, row: dict[str, Any] | None = None) -> str:
-    raw = _MATCHUP_SUFFIX_RE.sub("", str(question or "").strip())
-    raw = raw.lstrip(".").strip(" .")
-    if not raw:
-        raw = extract_hook(row or {})
-    if YOUTUBE_MATCHUP.lower() in raw.lower():
-        return raw
-    return f"{raw} {YOUTUBE_MATCHUP}"
+    from channels_config.aiwake.tools.metadata_generator import format_ctr_title
+
+    payload = row or {}
+    attacker, defender = extract_matchup(payload)
+    seed = str(payload.get("session_id") or question or "")
+    return format_ctr_title(question, attacker=attacker, defender=defender, seed=seed)
+
+
+def _word_clip(text: str, words: int) -> str:
+    parts = _clean_spoken(text).split()
+    if len(parts) <= words:
+        return " ".join(parts)
+    return " ".join(parts[:words]).rstrip(".,;:")
+
+
+def _clock(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _side_lines(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    utterances = list(payload.get("utterances") or [])
+    opening_side = [item for item in utterances if item.get("role") == "orchestrator"]
+    reply_side = [item for item in utterances if item.get("role") != "orchestrator"]
+    return opening_side, reply_side
+
+
+def _chapter_block(payload: dict[str, Any], attacker: str, defender: str) -> str:
+    utterances = list(payload.get("utterances") or [])
+    labels = (
+        "Opening argument",
+        f"{_short_model(attacker)} presses",
+        f"{_short_model(defender)} holds the frame",
+        "The fault line",
+        "Last word",
+    )
+    cursor = 0.0
+    starts: list[float] = []
+    for item in utterances:
+        starts.append(cursor)
+        try:
+            span = float(item.get("audio_duration_s") or 0)
+        except (TypeError, ValueError):
+            span = 0.0
+        cursor += span if span > 0 else 12.0
+    if not starts:
+        starts = [index * 12.0 for index in range(5)]
+    picks = [
+        0.0,
+        starts[min(1, len(starts) - 1)],
+        starts[len(starts) // 2],
+        starts[max(0, (3 * len(starts)) // 4)],
+        starts[-1],
+    ]
+    lines = [YOUTUBE_CHAPTER_HEADER]
+    for stamp, label in zip(picks, labels):
+        lines.append(f"{_clock(stamp)} - {label}")
+    return "\n".join(lines)
+
+
+def _debate_question(row: dict[str, Any], payload: dict[str, Any], attacker: str, defender: str) -> str:
+    questions = [
+        str(item.get("text") or "").strip()
+        for item in payload.get("utterances") or []
+        if item.get("role") == "orchestrator" and str(item.get("text") or "").rstrip().endswith("?")
+    ]
+    opening = str(payload.get("opening") or "").strip()
+    if len(questions) >= 2 and questions[-1] != opening:
+        return questions[-1]
+    return f"Who took the stronger stance — {attacker} or {defender}?"
+
+
+def _dilemma_paragraph(
+    attacker: str,
+    defender: str,
+    opening: str,
+    answer: str,
+) -> str:
+    """One paragraph on the conflict. Never a turn-by-turn transcript."""
+    question = _word_clip(opening, 28)
+    reply = _word_clip(answer, 22)
+    sentences = [
+        f"{attacker} and {defender} run this live, with no script between them.",
+    ]
+    if question:
+        sentences.append(f"The pressure is one question: {question}")
+    if reply:
+        reply = reply if reply[-1] in ".?!" else f"{reply}."
+        sentences.append(f"{defender} answers inside a narrower frame: {reply}")
+    else:
+        sentences.append(f"{defender} answers by narrowing what it will admit.")
+    sentences.append("The rest of the exchange stays on that fault line.")
+    return " ".join(sentences)
 
 
 def build_youtube_description(row: dict[str, Any], dialogue: dict[str, Any] | None = None) -> str:
+    from channels_config.aiwake.tools.metadata_generator import build_youtube_caption, master_anchor
+
     payload = dialogue or load_dialogue(row)
-    verbs = ("opens", "answers", "presses", "holds")
-    lines: list[str] = [social_hook(row, payload)]
-    for index, item in enumerate(payload.get("utterances") or []):
-        speaker = item.get("speaker") or ("Gemini 3.5 Flash" if item.get("role") == "orchestrator" else "Llama 3.3 70B")
-        verb = verbs[index % 4]
-        lines.append(f"{speaker} {verb}: {item['text']}")
-    return append_hashtags(
-        format_caption_paragraphs(*lines, YOUTUBE_DESCRIPTION_CTA),
-        social_hashtags(row, payload),
-        limit=MAX_HASHTAGS,
-    )
+    attacker, defender = extract_matchup(row)
+    opening_side, reply_side = _side_lines(payload)
+    if opening_side:
+        attacker = str(opening_side[0].get("speaker") or attacker)
+    if reply_side:
+        defender = str(reply_side[0].get("speaker") or defender)
+    anchor = master_anchor(payload, attacker=attacker, defender=defender)
+    return build_youtube_caption(anchor, payload, attacker=attacker, defender=defender)
 
 
 def build_linkedin_caption(hook: str = "", row: dict[str, Any] | None = None) -> str:
     """Engine B: technical architecture copy. Stored on content_library only."""
+    from channels_config.aiwake.tools.metadata_generator import build_linkedin_caption as _linkedin
+    from channels_config.aiwake.tools.metadata_generator import master_anchor
+
     payload = dict(row or {})
     if hook and not payload.get("topic") and not _nested(payload, "base_metadata", "hooks"):
         payload.setdefault("base_metadata", {})
@@ -863,18 +968,9 @@ def build_linkedin_caption(hook: str = "", row: dict[str, Any] | None = None) ->
             payload["base_metadata"].setdefault("hooks", [hook])
         payload.setdefault("topic", hook)
     dialogue = load_dialogue(payload)
-    return append_hashtags(
-        format_caption_paragraphs(
-            linkedin_lead(payload, dialogue),
-            linkedin_insight(payload, dialogue),
-            LINKEDIN_THESIS,
-            LINKEDIN_ENGINEERING_HEADER,
-            "\n".join((LINKEDIN_BULLET_EDIT, linkedin_orchestration(payload), LINKEDIN_BULLET_ARCH)),
-            LINKEDIN_CLOSING,
-        ),
-        LINKEDIN_HASHTAGS,
-        limit=MAX_HASHTAGS,
-    )
+    attacker, defender = extract_matchup(payload)
+    anchor = master_anchor(dialogue, attacker=attacker, defender=defender)
+    return _linkedin(anchor, seed=str(payload.get("session_id") or hook or ""))
 
 
 def build_post_planner_caption(hook: str = "", row: dict[str, Any] | None = None) -> str:
@@ -886,18 +982,95 @@ def build_post_planner_caption(hook: str = "", row: dict[str, Any] | None = None
             payload["base_metadata"].setdefault("hooks", [hook])
         payload.setdefault("topic", hook)
     dialogue = load_dialogue(payload)
-    quote = str(dialogue.get("quote") or hook or extract_hook(payload)).strip()
-    if quote and not (quote.startswith('"') and quote.endswith('"')):
-        quote = f'"{quote}"'
+    attacker, defender = extract_matchup(payload)
+    _opening_side, reply_side = _side_lines(dialogue)
+    opening = str(dialogue.get("opening") or hook or extract_hook(payload)).strip()
+    answer = str((reply_side[0].get("text") if reply_side else "") or dialogue.get("quote") or "").strip()
+    if opening_side_speaker := (str(_opening_side[0].get("speaker") or "") if _opening_side else ""):
+        attacker = opening_side_speaker
+    if reply_side:
+        defender = str(reply_side[0].get("speaker") or defender)
+    from channels_config.aiwake.tools.metadata_generator import build_social_caption, master_anchor
+
+    anchor = master_anchor(dialogue, attacker=attacker, defender=defender)
+    if hook and not dialogue.get("opening"):
+        anchor["core_hook"] = hook if str(hook).endswith("?") else f"{hook}?"
+    return build_social_caption(anchor)
+
+
+def _short_platform_caption(
+    row: dict[str, Any],
+    dialogue: dict[str, Any],
+    *,
+    attacker: str,
+    defender: str,
+    opening: str,
+    answer: str,
+    variant: str,
+) -> str:
+    """TikTok and Meta stay short. Each variant uses different wording."""
+    short_atk = _short_model(attacker)
+    short_def = _short_model(defender)
+    words = _clean_spoken(opening).split()
+    question = _word_clip(opening, 12).rstrip(".?!")
+    reply = _word_clip(answer, 12).rstrip(".?!")
+    if variant == "instagram":
+        punch = f"{short_atk} vs {short_def}."
+        line = f"The question: {question}" if question else "One question. No script."
+        if reply:
+            line = f"{line} {short_def} holds: {reply}."
+        cta = "Drop your take below."
+    elif variant == "facebook":
+        punch = "Who's actually right here?"
+        line = f"{short_atk} presses {question}." if question else f"{short_atk} presses. {short_def} narrows it."
+        if reply:
+            line = f"{line} {short_def} answers {reply}."
+        cta = "Who's right?"
+    else:
+        punch = opening if 0 < len(words) <= 10 else f"Who holds, {short_atk} or {short_def}?"
+        line = question or f"{short_atk} vs {short_def}."
+        if reply:
+            line = f"{line} — {short_def} says {reply}."
+        cta = SHORT_CTA
     return append_hashtags(
-        format_caption_paragraphs(
-            social_hook(payload, dialogue),
-            quote,
-            social_trigger(payload, dialogue),
-            SOCIAL_RENDER_NOTE,
-        ),
-        social_hashtags(payload, dialogue),
+        format_caption_paragraphs(punch, line, cta),
+        social_hashtags(row, dialogue),
         limit=MAX_HASHTAGS,
+    )
+
+
+def build_instagram_caption(hook: str = "", row: dict[str, Any] | None = None) -> str:
+    return build_post_planner_caption(hook, row)
+
+
+def build_facebook_caption(hook: str = "", row: dict[str, Any] | None = None) -> str:
+    return build_post_planner_caption(hook, row)
+
+
+def _build_variant_caption(hook: str, row: dict[str, Any] | None, variant: str) -> str:
+    payload = dict(row or {})
+    if hook and not payload.get("topic") and not _nested(payload, "base_metadata", "hooks"):
+        payload.setdefault("base_metadata", {})
+        if isinstance(payload["base_metadata"], dict):
+            payload["base_metadata"].setdefault("hooks", [hook])
+        payload.setdefault("topic", hook)
+    dialogue = load_dialogue(payload)
+    attacker, defender = extract_matchup(payload)
+    opening_side, reply_side = _side_lines(dialogue)
+    opening = str(dialogue.get("opening") or hook or extract_hook(payload)).strip()
+    answer = str((reply_side[0].get("text") if reply_side else "") or dialogue.get("quote") or "").strip()
+    if opening_side:
+        attacker = str(opening_side[0].get("speaker") or attacker)
+    if reply_side:
+        defender = str(reply_side[0].get("speaker") or defender)
+    return _short_platform_caption(
+        payload,
+        dialogue,
+        attacker=attacker,
+        defender=defender,
+        opening=opening,
+        answer=answer,
+        variant=variant,
     )
 
 
@@ -957,16 +1130,19 @@ def stamp_dual_captions(row: dict[str, Any]) -> bool:
     if theme and str(row.get("topic") or "") != theme:
         row["topic"] = theme
     linkedin = build_linkedin_caption(row=row)
-    social = build_post_planner_caption(row=row)
+    tiktok = build_post_planner_caption(row=row)
+    instagram = build_instagram_caption(row=row)
+    facebook = build_facebook_caption(row=row)
     yt_title = format_youtube_title(str(dialogue.get("opening") or extract_hook(row)), row)
     yt_desc = build_youtube_description(row, dialogue)
     x_caption = build_x_caption(row=row)
     changed = False
     updates = {
         "linkedin_caption": linkedin,
-        "post_planner_caption": social,
-        "humanized_caption": social,
-        "facebook_caption": social,
+        "post_planner_caption": tiktok,
+        "tiktok_caption": tiktok,
+        "humanized_caption": instagram,
+        "facebook_caption": facebook,
         "final_caption": yt_desc,
     }
     for key, value in updates.items():
@@ -992,6 +1168,18 @@ def stamp_dual_captions(row: dict[str, Any]) -> bool:
     if str(x_block.get("caption") or "") != x_caption:
         x_block["caption"] = x_caption
         changed = True
+    tiktok_block = _ensure_nested(row, "platform_overrides", "tiktok")
+    if str(tiktok_block.get("caption") or "") != tiktok:
+        tiktok_block["caption"] = tiktok
+        changed = True
+    instagram_block = _ensure_nested(row, "platform_overrides", "instagram")
+    if str(instagram_block.get("caption") or "") != instagram:
+        instagram_block["caption"] = instagram
+        changed = True
+    facebook_block = _ensure_nested(row, "platform_overrides", "facebook")
+    if str(facebook_block.get("caption") or "") != facebook:
+        facebook_block["caption"] = facebook
+        changed = True
     return changed
 
 
@@ -1004,12 +1192,18 @@ def verify_linkedin_caption(caption: str, *, label: str = "linkedin") -> list[st
     tags = extract_hashtags(caption)
     if len(tags) > MAX_HASHTAGS:
         errors.append(f"{label}: {len(tags)} hashtags>{MAX_HASHTAGS}")
-    if "I don't benchmark models on static multiple-choice tests" not in caption:
-        errors.append(f"{label}: missing golden thesis")
-    if "0% manual video editing" not in caption or "GraphRAG" not in caption:
-        errors.append(f"{label}: missing engineering bullets")
-    if LINKEDIN_CLOSING not in caption:
-        errors.append(f"{label}: missing telemetry ledger")
+    from channels_config.aiwake.tools.metadata_generator import (
+        LINKEDIN_CLOSE,
+        LINKEDIN_FLEX,
+        has_chapter_timestamps,
+    )
+
+    if LINKEDIN_FLEX not in caption:
+        errors.append(f"{label}: missing engineering flex")
+    if LINKEDIN_CLOSE not in caption:
+        errors.append(f"{label}: missing outreach line")
+    if has_chapter_timestamps(caption):
+        errors.append(f"{label}: chapter timestamps")
     if _CAPTION_URL_RE.search(caption):
         errors.append(f"{label}: external URL in body")
     if SOCIAL_RENDER_NOTE in caption:
@@ -1026,8 +1220,12 @@ def verify_social_caption(caption: str, *, label: str = "social") -> list[str]:
         errors.append(f"{label}: {len(tags)} hashtags, expected exactly {MAX_HASHTAGS}")
     if "\n\n" not in caption:
         errors.append(f"{label}: missing paragraph breaks")
-    if SOCIAL_RENDER_NOTE not in caption:
-        errors.append(f"{label}: missing render note")
+    from channels_config.aiwake.tools.metadata_generator import SOCIAL_FOLLOW, has_chapter_timestamps
+
+    if SOCIAL_FOLLOW not in caption:
+        errors.append(f"{label}: missing follow line")
+    if has_chapter_timestamps(caption):
+        errors.append(f"{label}: chapter timestamps")
     if LINKEDIN_THESIS in caption or LINKEDIN_ENGINEERING_HEADER in caption or "GraphRAG" in caption:
         errors.append(f"{label}: leaked LinkedIn engineering")
     if _DATE_IN_CAPTION_RE.search(caption_body_before_hashtags(caption)):

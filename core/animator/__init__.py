@@ -77,7 +77,7 @@ def render_dynamic_animation(
     kids'-cartoon channel, a future puppet pair) can drive the whole engine
     with plain dataclasses and paths.
     """
-    from .asset_generator import DEFAULT_PUPPETS_DIR, generate_default_puppet
+    from .asset_generator import DEFAULT_PUPPETS_DIR
 
     puppets_root = Path(puppets_dir) if puppets_dir else DEFAULT_PUPPETS_DIR
     style_map = {style.character_id: style for style in styles}
@@ -86,7 +86,6 @@ def render_dynamic_animation(
 
     rigs: dict[str, PuppetRig] = {}
     for character_id in style_map:
-        generate_default_puppet(character_id, puppets_dir=puppets_root)
         rigs[character_id] = PuppetRig(
             PuppetSkin.load_or_create(puppets_root / character_id)
         )

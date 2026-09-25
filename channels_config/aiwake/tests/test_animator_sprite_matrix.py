@@ -16,6 +16,13 @@ from channels_config.aiwake.animator_bridge import (
     resolve_character_map,
     resolve_dialectic_emotion,
 )
+from channels_config.aiwake.contracts import SpeakerRole
+from channels_config.aiwake.media.audio import (
+    GEMINI_CANONICAL_VOICE,
+    resolve_cta_voice,
+    resolve_voice,
+)
+from channels_config.aiwake.settings import AudioConfig
 from core.animator.audio_analyzer import (
     AudioAnalyzer,
     active_speaker_lookup,
@@ -112,6 +119,12 @@ def test_manifestless_high_resolution_external_sprite_matrix_is_preserved(tmp_pa
     assert camera._update_emotion("inquisitor") == ("neutral", 1 / 3)  # noqa: SLF001
     assert camera._update_emotion("inquisitor") == ("neutral", 2 / 3)  # noqa: SLF001
     assert camera._update_emotion("inquisitor") == ("neutral", 1.0)  # noqa: SLF001
+    brow_angles = [
+        camera._update_brow_angle("inquisitor")  # noqa: SLF001
+        for _ in range(4)
+    ]
+    assert 0.0 > brow_angles[0] > brow_angles[1] > brow_angles[2] > brow_angles[3]
+    assert brow_angles[-1] == -5.5
     assert (puppet_dir / "eyes_half.png").is_file()
     assert (puppet_dir / "eyes_blink.png").is_file()
     assert (puppet_dir / "bg.png").is_file()
@@ -158,10 +171,10 @@ def test_manifestless_high_resolution_external_sprite_matrix_is_preserved(tmp_pa
     assert np.count_nonzero(
         brow_alpha[expected_brow_y - 4 : expected_brow_y + 5]
     ) > 0
-    outer_thickness = np.count_nonzero(brow_alpha[:, 364:370], axis=0).max()
-    inner_thickness = np.count_nonzero(brow_alpha[:, 450:456], axis=0).max()
-    assert outer_thickness >= 6
-    assert inner_thickness >= 6
+    left_thickness = np.count_nonzero(brow_alpha[:, 350:470], axis=0).max()
+    right_thickness = np.count_nonzero(brow_alpha[:, 500:620], axis=0).max()
+    assert left_thickness >= 5
+    assert right_thickness >= 5
     brow_sprites = [rig._brow_overlay(state)[0].tobytes() for state in BROW_STATES]  # noqa: SLF001
     assert len(set(brow_sprites)) >= 3
     rest_mouths = [rig._rest_head(state).tobytes() for state in REST_MOUTH_STATES]  # noqa: SLF001
@@ -189,13 +202,19 @@ def test_shared_panorama_has_stable_eighty_percent_exposure() -> None:
     assert np.array_equal(prepared, expected)
 
 
-def test_blink_schedule_is_deterministic_five_frame_cel_cycle() -> None:
+def test_blink_schedule_is_seeded_organic_five_frame_cel_cycle() -> None:
     fps = 30
     states = AudioAnalyzer(fps=fps)._blink_schedule(fps * 20, seed=17)
+    assert states == AudioAnalyzer(fps=fps)._blink_schedule(fps * 20, seed=17)
     closed_frames = [index for index, state in enumerate(states) if state == 2]
-    assert closed_frames == [45, 135, 225, 315, 405, 495, 585]
     for center in closed_frames:
-        assert states[center - 2 : center + 3] == [0, 1, 2, 1, 0]
+        assert states[center - 2 : center + 3] == [1, 1, 2, 1, 1]
+    intervals = [
+        (right - left) / fps
+        for left, right in zip(closed_frames, closed_frames[1:])
+    ]
+    assert intervals
+    assert all(3.2 <= interval <= 4.5 for interval in intervals)
 
 
 def test_audio_resampling_is_band_limited_and_turn_edges_are_faded() -> None:
@@ -218,20 +237,37 @@ def test_dialectic_emotions_are_deterministic_and_frame_aligned() -> None:
     assert resolve_dialectic_emotion("opens") == "neutral"
     assert resolve_dialectic_emotion("answers") == "confident"
     assert resolve_dialectic_emotion("presses: premise") == "inquisitor"
-    assert resolve_dialectic_emotion("probes") == "skeptical"
     assert resolve_dialectic_emotion("holds") == "resolute"
     assert resolve_dialectic_emotion("defends") == "resolute"
     assert resolve_dialectic_emotion("concedes") == "conceded"
     assert resolve_dialectic_emotion("") == "neutral"
+    assert resolve_dialectic_emotion("opens") == "neutral"
+    assert resolve_dialectic_emotion("probes") == "neutral"
+    assert resolve_dialectic_emotion("questions") == "neutral"
+    assert resolve_dialectic_emotion("presses") == "inquisitor"
     assert tuple(emotion_brow_state(state) for state in BROW_STATES) == BROW_STATES
+    assert emotion_brow_state("disbelief") == "troubled"
     assert emotion_brow_angles("neutral") == (0.0, 0.0)
-    assert emotion_brow_angles("inquisitor") == (-16.0, 16.0)
+    assert emotion_brow_angles("inquisitor") == (-5.5, 5.5)
     assert emotion_brow_angles("resolute") == (0.0, 0.0)
-    assert emotion_brow_angles("defeated") == (14.0, -14.0)
-    assert emotion_brow_angles("disbelief") == (14.0, -14.0)
-    assert emotion_brow_angles("inquisitor", 1.5) == (-17.5, 17.5)
+    assert emotion_brow_angles("defeated") == (12.0, -12.0)
+    assert emotion_brow_angles("disbelief") == (12.0, -12.0)
+    assert emotion_brow_angles("inquisitor", 1.5) == (-7.0, 7.0)
     assert emotion_brow_angles("resolute", 1.5) == (0.0, 0.0)
     assert emotion_brow_angles("inquisitor", 1.5) != emotion_brow_angles("resolute", 1.5)
+
+
+def test_gemini_voice_is_hard_pinned_to_canonical_persona() -> None:
+    stale = AudioConfig(
+        orchestrator_voice="en-US-BrianNeural",
+        voice_map={"orchestrator": "en-US-GuyNeural"},
+    )
+    assert resolve_voice(
+        stale,
+        SpeakerRole.ORCHESTRATOR,
+        "google/gemini-3.5-flash",
+    ) == GEMINI_CANONICAL_VOICE
+    assert resolve_cta_voice(stale) == GEMINI_CANONICAL_VOICE
 
     track = emotion_lookup(
         [
@@ -245,9 +281,9 @@ def test_dialectic_emotions_are_deterministic_and_frame_aligned() -> None:
     assert emotion_rest_mouth_state("confident") == "smug_smile"
 
 
-def test_dramatic_camera_uses_discrete_tight_viewport() -> None:
+def test_dramatic_camera_uses_125_percent_tight_viewport() -> None:
     assert CAMERA_NORMAL_ZOOM == 0.95
-    assert CAMERA_TIGHT_ZOOM == 1.35
+    assert CAMERA_TIGHT_ZOOM == 1.25
     assert lead_anchor_x("right") == GEMINI_LEAD_X == 420
     assert lead_anchor_x("left") == LLAMA_LEAD_X == 660
     assert dramatic_camera_mode(camera_tight=False) == CAMERA_NORMAL
@@ -299,7 +335,7 @@ def test_reaction_cut_precedes_voice_with_defeated_expression() -> None:
     assert emotions[23] == "resolute"
 
 
-def test_only_llama_concession_uses_tight_camera(
+def test_only_final_orchestrator_press_uses_tight_camera(
     tmp_path: Path,
 ) -> None:
     from channels_config.aiwake.contracts import (  # noqa: PLC0415
@@ -347,8 +383,9 @@ def test_only_llama_concession_uses_tight_camera(
         False,
         False,
         False,
-        True,
         False,
+        False,
+        True,
         False,
     ]
     assert turns[1].emotion == "confident"
@@ -358,7 +395,7 @@ def test_only_llama_concession_uses_tight_camera(
     assert turns[4].start_time == turns[3].end_time
     assert turns[4].camera_tight is False
     assert turns[4].text.startswith("I don't say no")
-    assert turns[5].camera_tight is False
+    assert turns[5].camera_tight is True
     assert turns[5].speaker != turns[4].speaker
 
 

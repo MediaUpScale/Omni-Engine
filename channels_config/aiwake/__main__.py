@@ -85,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="Alternate aiwake_config.yaml")
     parser.add_argument("--output-dir", type=Path, help="Override the media destination")
     parser.add_argument(
+        "--duration",
+        type=float,
+        metavar="SECONDS",
+        help="Cap a dynamic-animation verification render to this duration.",
+    )
+    parser.add_argument(
         "-o",
         "--orchestrator",
         metavar="MODEL",
@@ -337,7 +343,12 @@ def main(argv: list[str] | None = None) -> int:
         "animation_skin": args.skin,
         "left_puppet": args.left_puppet,
         "right_puppet": args.right_puppet,
-        "production_publish": dynamic_animation and not args.offline,
+        "duration_override": args.duration,
+        "production_publish": (
+            dynamic_animation
+            and not args.offline
+            and args.duration is None
+        ),
     }
 
     if args.quantity > 1:
@@ -359,6 +370,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"end reason    : {result.dialogue_end_reason}")
     print(f"audio         : {result.audio_seconds:.1f}s")
     print(f"video         : {result.video_path or '(none)'}")
+    if dynamic_animation and args.duration is not None:
+        from .media.audio import (  # noqa: PLC0415
+            DEEPSEEK_CANONICAL_VOICE,
+            GEMINI_CANONICAL_VOICE,
+        )
+
+        print(f"gemini v2 git : 54b1b5d")
+        print(f"gemini voice  : {GEMINI_CANONICAL_VOICE} (+8%, -6Hz)")
+        print(f"deepseek voice: {DEEPSEEK_CANONICAL_VOICE} (+8%, -6Hz)")
+        print("gemini camera : immutable 54b1b5d contain/center/bottom camera")
+        print("deepseek rig  : harmonic head/body scale, shoulders>=850, body_y=1920")
+        print("body masks    : no dilation, gradient, fade, or translucent fill")
 
     return 0 if result.succeeded else 1
 

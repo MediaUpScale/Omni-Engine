@@ -489,6 +489,7 @@ class AudioConfig(_Frozen):
             "orchestrator": "en-US-BrianNeural",
             "claude-sonnet": "en-GB-RyanNeural",
             "deepseek-chat": "en-US-EricNeural",
+            "llama-70b": "en-US-BrianNeural",
             "gemini-flash": "en-US-GuyNeural",
             "gemini": "en-US-GuyNeural",
         }
