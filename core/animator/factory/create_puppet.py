@@ -131,17 +131,12 @@ def _generation_prompt(
 ) -> str:
     if character_id.strip().lower() == "deepseek_cyborg_v3":
         return DEEPSEEK_VINTAGE_GHIBLI_PROMPT
+    detail = custom_prompt.strip()
+    if detail:
+        return detail
     name = character_id.split("_cyborg", 1)[0].replace("_", " ").strip().upper()
     name = name or character_id.replace("_", " ").strip().upper()
-    blueprint = GHIBLI_MECHA_PROMPT_TEMPLATE.format(name=name, facing=facing)
-    detail = custom_prompt.strip()
-    if not detail or detail == blueprint:
-        return blueprint
-    return (
-        f"{blueprint}\n"
-        "Additional character-specific design details, only where consistent "
-        f"with the mandatory retro cel-animation contract above: {detail}"
-    )
+    return GHIBLI_MECHA_PROMPT_TEMPLATE.format(name=name, facing=facing)
 
 
 def _safe_character_id(value: str) -> str:
@@ -253,6 +248,7 @@ def generate_character_image(
     destination: Path,
     *,
     aspect_ratio: str = "9:16",
+    reference_path: Path | None = None,
 ) -> str:
     """Generate one image on the fast Gemini Flash image tier."""
     key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
@@ -267,16 +263,25 @@ def generate_character_image(
     client = make_guarded_gemini_client(key)
     destination.parent.mkdir(parents=True, exist_ok=True)
     model = _FAST_IMAGE_MODEL
+    if "gemini-3-pro-image" in model:
+        raise RuntimeError("gemini-3-pro-image is prohibited")
     print(f"active image model: {model}")
     image_config = types.ImageConfig(aspect_ratio=aspect_ratio)
     config = types.GenerateContentConfig(
         response_modalities=["TEXT", "IMAGE"],
         image_config=image_config,
     )
+    contents: Any = prompt
+    if reference_path is not None:
+        contents = [
+            types.Part.from_bytes(data=reference_path.read_bytes(), mime_type="image/png"),
+            types.Part.from_text(text=prompt),
+        ]
+        print(f"reference image: {reference_path}")
     response = guarded_generate_content(
         client,
         model=model,
-        contents=prompt,
+        contents=contents,
         config=config,
         kind="image",
         source="factory.create_puppet",
