@@ -111,6 +111,12 @@ def emotion_brow_angles(emotion: str, pulse_deg: float = 0.0) -> tuple[float, fl
 
 def emotion_brow_state(emotion: str) -> str:
     state = (emotion or "neutral").strip().lower()
+    if state == "deboche":
+        return "skeptical"
+    if state in {"sad_pout", "sad"}:
+        return "sad"
+    if state in {"shock_surprise", "shock"}:
+        return "shock"
     if state in {"defeated", "stressed"}:
         return "conceded"
     if state in {"disbelief", "troubled", "concerned"}:
@@ -120,7 +126,7 @@ def emotion_brow_state(emotion: str) -> str:
 
 def emotion_rest_mouth_state(emotion: str) -> str:
     state = (emotion or "neutral").strip().lower()
-    if state in {"inquisitor", "confident"}:
+    if state in {"inquisitor", "confident", "deboche"}:
         return "smug_smile"
     if state in {"conceded", "defeated", "stressed"}:
         return "stressed_grimace"
@@ -521,11 +527,15 @@ class PuppetRig:
         )
         self._eye_overlay: dict[int, np.ndarray] = {}
         self._eye_bbox: dict[int, tuple[int, int, int, int]] = {}
+        local_head = bool((self.skin.brow_config or {}).get("local_head_lock"))
         for eye_state, eye_key in _EYE_LAYER_BY_STATE.items():
-            overlay = self._stencil_to_lenses(
-                self._translate_eye_overlay(
-                    np.asarray(layers[eye_key], dtype=np.uint8).copy()
-                )
+            raw_eye = np.asarray(layers[eye_key], dtype=np.uint8).copy()
+            # Rig lids already share the head origin. A second lens recenter
+            # would move them in scene space and off the bezel.
+            overlay = (
+                raw_eye
+                if local_head
+                else self._stencil_to_lenses(self._translate_eye_overlay(raw_eye))
             )
             self._eye_overlay[eye_state] = overlay
             self._eye_bbox[eye_state] = _alpha_bbox(
@@ -861,6 +871,35 @@ class PuppetRig:
         angle_override: float | None = None,
     ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
         """Build anti-aliased brow bars locked to the optical-lens rims."""
+        brow_config = self.skin.brow_config or {}
+        if brow_config.get("lock_to_rig"):
+            brow_state = emotion_brow_state(state)
+            if brow_state == "skeptical":
+                expression = "smug"
+            elif brow_state in {"sad", "conceded"}:
+                expression = "sad"
+            elif brow_state == "shock":
+                expression = "shock"
+            else:
+                expression = "neutral"
+            key = ("rig", expression)
+            if key in self._brow_cache:
+                return self._brow_cache[key]
+            from .render.facial_rig import stamp_scene_brows
+
+            layer = Image.new("RGBA", self.canvas_size, (0, 0, 0, 0))
+            stamp_scene_brows(
+                layer,
+                brow_config["rig_brows"],
+                expression,
+                (16, 18, 22, 255),
+            )
+            rgba = np.asarray(layer, dtype=np.uint8)
+            bbox = _alpha_bbox(rgba[..., 3].astype(np.float32), pad=4)
+            x0, y0, x1, y1 = bbox
+            result = (rgba[y0:y1, x0:x1].copy(), bbox)
+            self._brow_cache[key] = result
+            return result
         brow_state = emotion_brow_state(state)
         brow_angle = (
             self.brow_angle(brow_state)
@@ -954,11 +993,17 @@ class PuppetRig:
                 Image.Resampling.LANCZOS,
             )
             if index < len(self._eye_bboxes):
-                brow_y = self._eye_bboxes[index][1] - int(
-                    round(float(brow_config.get("gap_px") or 4))
-                )
+                socket_top = self._eye_bboxes[index][1]
+                brow_y = socket_top - int(round(float(brow_config.get("gap_px") or 4)))
             else:
-                brow_y = eye_y - self._eye_radius - 4
+                socket_top = eye_y - self._eye_radius
+                brow_y = socket_top - 4
+            plate_bottom = brow_config.get("nameplate_bottom")
+            if plate_bottom is not None:
+                # The ink sits on the socket. It may not cross the nameplate.
+                highest = int(plate_bottom) + int(round(stroke_px)) // 2 + 3
+                lowest = socket_top - 2
+                brow_y = min(lowest, max(int(brow_y), highest))
             x_nudge = 0
             y_nudge = 0
             if is_gemini and index == 1:

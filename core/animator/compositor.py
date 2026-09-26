@@ -56,6 +56,10 @@ HERO_YAW_DEG = 25.0
 CAMERA_NORMAL = "normal"
 CAMERA_TIGHT = "tight"
 CAMERA_NORMAL_ZOOM = 0.95
+# Compatibility cameras (the v1 pilot path) render 5% above a 1.0 fit
+# and sit 30px lower in the frame.
+PRESENT_SCALE = 1.05
+PRESENT_DROP_PX = 30
 CAMERA_TIGHT_ZOOM = 1.25
 GEMINI_LEAD_X = 420
 LLAMA_LEAD_X = 660
@@ -402,6 +406,7 @@ class _HeroCamera:
             "gemini_cyborg_v2",
             "llama_cyborg_v2",
         }
+        present_camera = False
         if legacy_artist_v2:
             # Immutable camera contract copied from 54b1b5d. Do not route V2
             # artist cels through any V3 eye-line or proportion normalizer.
@@ -445,10 +450,11 @@ class _HeroCamera:
                 / float(rig.framing_head_height)
             )
         else:
-            # Keep the compatibility path for third-party artist matrices.
+            # Compatibility camera: fit the cel, then apply the pilot scale.
+            present_camera = True
             scale = (
                 min(target_width / float(crop_w), target_height / float(crop_h))
-                * float(np.clip(zoom, 0.80, 1.60))
+                * PRESENT_SCALE
             )
         native_eye_x = (
             rig.skin.anchors.left_eye[0] + rig.skin.anchors.right_eye[0]
@@ -530,6 +536,8 @@ class _HeroCamera:
                 int(body_rows.max()) + 1 if body_rows.size else rig.canvas_size[1]
             )
             self.offset_y = int(round(target_height - opaque_bottom * self.scale))
+            if present_camera:
+                self.offset_y += PRESENT_DROP_PX
         if parametric_v3:
             self.body_offset_x = int(
                 round(matrix.body_offset_x * (target_width / 1080.0))
