@@ -585,6 +585,53 @@ PROVEN_C_BODY_PROMPT = (
     "Headless body only. Solid flat pure magenta background (#FF00FF). --ar 9:16"
 )
 
+DECOUPLED_A_HEAD_PROMPT = (
+    "Studio Ghibli vintage anime mecha cel animation, 1980s retro-futuristic technology aesthetic, clean flat watercolor shading. "
+    "Square 1:1 close-up of a charming cybernetic communicator robot named 'CHATGPT', facing 25 degrees to the left. "
+    "HEAD: Compact rounded tin-plate helmet in warm off-white with delicate brass ventilation mesh and knobs on temple dials. "
+    "Forehead plate engraved 'CHATGPT'. Glowing emerald-cyan camera-iris aperture eyes. "
+    "LOWER FACE: Smooth curved bronze jawplate with tiny exposed side hydraulic pivot joints at the jaw corners, center area 100% flat, clean and blank with NO mouth, NO nose. "
+    "Floating head only, zero neck. Solid flat pure magenta background (#FF00FF). --ar 1:1"
+)
+DECOUPLED_A_BODY_PROMPT = (
+    "Studio Ghibli vintage anime mecha cel animation, 1980s retro-futuristic technology aesthetic. "
+    "Vertical 9:16 portrait of a charming cybernetic robot chassis facing 25 degrees to the left. "
+    "Torso plate in warm off-white with flat antique brass collar rim, dark corrugated neck column socket, slender tubular mechanical arms flush against flanks down to bottom edge. "
+    "Grounded continuous base bleeding off at y=1920. Headless body only. Flawless museum condition, zero rust. "
+    "Solid flat pure magenta background (#FF00FF). --ar 9:16"
+)
+DECOUPLED_B_HEAD_PROMPT = (
+    "Vintage 1950s retro-futuristic anime mecha, Studio Ghibli cel animation style, clean watercolor fills. "
+    "Square 1:1 close-up of a charming laboratory automaton robot named 'CHATGPT', facing 25 degrees to the left. "
+    "HEAD: Domed tin-plate helmet in pale sage-green with twin miniature brass gear-driven dials mounted on the ears. "
+    "Forehead plate engraved 'CHATGPT'. Twin circular glowing mint glass porthole lenses set in antique brass bezels. "
+    "LOWER FACE: Angular flat brass faceplate covering the jaw, completely smooth, untextured and blank. "
+    "STRICTLY NO nose, NO nostrils, NO mouth. Floating head only, zero neck. "
+    "Solid flat pure magenta background (#FF00FF). --ar 1:1"
+)
+DECOUPLED_B_BODY_PROMPT = (
+    "Vintage 1950s retro-futuristic anime mecha, Studio Ghibli cel animation style. "
+    "Vertical 9:16 portrait of a charming robot chassis facing 25 degrees to the left. "
+    "Pale sage-green tin-plate chest plate matching the head, with flat brass collar rim and exposed copper joint rings. "
+    "Slender tubular arms flush along the borders bleeding off at y=1920. Headless body only, zero rust. "
+    "Solid flat pure magenta background (#FF00FF). --ar 9:16"
+)
+DECOUPLED_C_HEAD_PROMPT = (
+    "Studio Ghibli 1990s anime mecha cel animation, crisp dark ink contours, flat pastel watercolor fills. "
+    "Square 1:1 close-up of a dignified cybernetic robot named 'CHATGPT', facing 25 degrees to the left. "
+    "HEAD: Refined two-tone helmet in antique ivory-cream and muted celadon sage-green plating with exposed miniature brass clockwork gears on the temples. "
+    "Rectangular brass nameplate engraved 'CHATGPT'. Large calm glowing cyan optical aperture sensor eyes. "
+    "LOWER FACE: Clean smooth curved antique bronze chin shield plate with zero mouth, zero nose, completely blank metallic canvas. "
+    "Floating head only, zero neck. Solid flat pure magenta background (#FF00FF). --ar 1:1"
+)
+DECOUPLED_C_BODY_PROMPT = (
+    "Studio Ghibli 1990s anime mecha cel animation. "
+    "Vertical 9:16 portrait of a dignified robot chassis facing 25 degrees left. "
+    "Symmetrical ivory and muted sage-green tin torso with flat satin-brass collar rim and articulated shoulder gear pivots. "
+    "Slender tubular arms down to bottom edge (y=1920). Headless body only. Flawless museum-grade finish, zero rust. "
+    "Solid flat pure magenta background (#FF00FF). --ar 9:16"
+)
+
 CLAUDE_HEAD_PROMPT = (
     "Studio Ghibli 1990s vintage anime cel animation, Hayao Miyazaki mecha aesthetic, clean flat watercolor shading. "
     "Square 1:1 close-up portrait of the mecha head of a dignified cybernetic robot named 'CLAUDE', "
@@ -1440,6 +1487,281 @@ class OneShotPuppetFactory:
         destination.parent.mkdir(parents=True, exist_ok=True)
         sheet.save(destination, format="PNG", compress_level=1)
         print(f"health: {destination}")
+        return destination
+
+    def setup_ingestion(self, character_id: str) -> Path:
+        """Create the staging inbox and the three view folders. No images are generated."""
+        if character_id in {"claude_cyborg_v1", "deepseek_cyborg_v3"}:
+            raise SystemExit(f"{character_id} is locked; ingestion setup is refused")
+        skin_dir = assets_root() / "puppets" / character_id
+        folders = [skin_dir / "staging"]
+        folders.extend(skin_dir / "views" / name for name in ("facing_left", "facing_right", "facing_front"))
+        for folder in folders:
+            folder.mkdir(parents=True, exist_ok=True)
+            print(f"ingestion-ready: {folder}")
+        return skin_dir
+
+    def ingest_master(self, character_id: str, source_facing: str) -> Path:
+        """Dock a staged master, then build the opposite 3/4 view and the frontal view."""
+        import cv2
+        from PIL import ImageDraw, ImageFont
+
+        from core.animator.asset_generator import DEFAULT_PUPPETS_DIR, ensure_shared_panorama
+        from .puppet_assembler import crop_alpha, dock_socket, mirror_approved_body, safe_rotate, scale_body, scale_head
+
+        if character_id in {"claude_cyborg_v1", "deepseek_cyborg_v3"}:
+            raise SystemExit(f"{character_id} is locked; master ingestion is refused")
+        if source_facing != "right":
+            raise SystemExit("--ingest-master currently accepts --source-facing right")
+        skin_dir = assets_root() / "puppets" / character_id
+        staging = skin_dir / "staging"
+
+        def _staged_asset(kind: str) -> Path:
+            for candidate in (
+                staging / f"{kind}.png",
+                staging / f"{kind}-facing-{source_facing}-ref.png",
+                staging / f"{kind}-facing-{source_facing}.png",
+            ):
+                if candidate.is_file():
+                    return candidate
+            raise SystemExit(f"place {kind}.png in {staging}")
+
+        head_source = _staged_asset("head")
+        body_source = _staged_asset("body")
+        name = character_id.split("_cyborg", 1)[0].replace("_", " ").upper() or character_id.upper()
+        if character_id == "chatgpt_cyborg_v1":
+            opposing_prompt = (
+                "Maintain exact same head, off-white helmet, camera-iris optics, bronze chin. "
+                "Fix forehead nameplate so text 'CHATGPT' reads normally from left to right. "
+                "The entire rounded bronze chin stays fully inside the frame, uncropped, "
+                "with a clear magenta margin below it. Do not cut the chin. "
+                "Floating head only. Solid magenta #FF00FF."
+            )
+            front_head_prompt = (
+                "Use the reference head. Redraw it facing the camera at 0 degrees, symmetrical. "
+                "Keep the off-white helmet, camera-iris optics, and blank bronze chin. "
+                "Forehead nameplate reads 'CHATGPT' left to right. "
+                "The entire rounded bronze chin stays fully inside the frame, uncropped, "
+                "with a clear magenta margin below it. Do not cut the chin. "
+                "Floating head only, zero neck. Solid magenta #FF00FF."
+            )
+            front_body_prompt = (
+                "The references are three-quarter views. Ignore their camera angle. "
+                "Draw a NEW torso square to the camera, yaw exactly 0 degrees, like a mirror front. "
+                "Not three-quarter. Not a side view. "
+                "The chest plate is a centered flat rectangle. The neck ring is a centered circle. "
+                "Both arms are identical, hanging straight, fully inside the frame from shoulder to hand, "
+                "with magenta space beside each hand. Do not crop either arm. "
+                "Off-white chest, bronze lower torso, brass rivets, cream arms with bronze bands, dark neck socket. "
+                "Headless body only. No head. No helmet. Solid magenta #FF00FF."
+            )
+        else:
+            opposing_prompt = (
+                f"Maintain the exact same head. Fix the forehead nameplate so '{name}' reads left to right. "
+                "The entire rounded chin stays fully inside the frame, uncropped, "
+                "with a clear magenta margin below it. Do not cut the chin. "
+                "Floating head only. Solid magenta #FF00FF."
+            )
+            front_head_prompt = (
+                f"Use the reference head. Redraw it symmetrical and facing the camera at 0 degrees. "
+                f"The forehead nameplate reads '{name}' left to right. "
+                "The entire rounded chin stays fully inside the frame, uncropped, "
+                "with a clear magenta margin below it. Do not cut the chin. "
+                "Floating head only, zero neck. Solid magenta #FF00FF."
+            )
+            front_body_prompt = (
+                "The references are three-quarter views. Ignore their camera angle. "
+                "Draw a NEW torso square to the camera, yaw exactly 0 degrees. "
+                "Not three-quarter. Not a side view. "
+                "Both arms are identical, fully inside the frame, with magenta space beside each hand. "
+                "Headless body only. No head. Solid magenta #FF00FF."
+            )
+
+        def _save(image: np.ndarray, path: Path) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(image).save(path, format="PNG", compress_level=1)
+
+        raw_head = crop_alpha(np.asarray(Image.open(head_source).convert("RGBA")))
+        raw_body = crop_alpha(np.asarray(Image.open(body_source).convert("RGBA")))
+        right_head = safe_rotate(scale_head(raw_head, 710), -3.5)
+        right_body = scale_body(raw_body, right_head.shape[1], 1.40)
+        right_head, right_body, right_head_xy, right_body_xy = dock_socket(right_head, right_body, "facing_right")
+        right_dir = skin_dir / "views" / "facing_right"
+        _save(right_head, right_dir / "head.png")
+        _save(right_body, right_dir / "body.png")
+
+        left_body = mirror_approved_body(right_body)
+        preflip = cv2.flip(right_head, 1)
+        preflip_path = staging / "temp_pre_flipped_head.png"
+        _save(preflip, preflip_path)
+        reference = staging / "temp_pre_flipped_magenta.png"
+        _reference_with_chin_margin(preflip_path, reference)
+        left_head_source = staging / "source_head_left.png"
+        left_raw = _generate_intact_head(opposing_prompt, left_head_source, reference)
+        height_scale = right_head.shape[0] / max(1, left_raw.shape[0])
+        left_head = cv2.resize(left_raw, None, fx=height_scale, fy=height_scale, interpolation=cv2.INTER_LANCZOS4)
+        left_head, left_body, left_head_xy, left_body_xy = dock_socket(left_head, left_body, "facing_left")
+        left_dir = skin_dir / "views" / "facing_left"
+        _save(left_head, left_dir / "head.png")
+        _save(left_body, left_dir / "body.png")
+
+        front_head_reference = staging / "temp_front_head_magenta.png"
+        front_body_reference = staging / "temp_front_body_magenta.png"
+        _reference_with_chin_margin(right_dir / "head.png", front_head_reference)
+        _frontal_body_reference(left_dir / "body.png", right_dir / "body.png", front_body_reference)
+        front_head_source = staging / "source_head_front.png"
+        front_body_source = staging / "source_body_front.png"
+        front_head_raw = _generate_intact_head(front_head_prompt, front_head_source, front_head_reference)
+        _generate_frontal_body(front_body_prompt, front_body_source, front_body_reference)
+        with Image.open(front_body_source) as opened:
+            front_body_raw = crop_alpha(np.asarray(birefnet_cutout(opened.convert("RGB"))))
+        front_head = scale_head(front_head_raw, 710)
+        front_body = scale_body(front_body_raw, front_head.shape[1], 1.40)
+        front_head, front_body, front_head_xy, front_body_xy = dock_socket(front_head, front_body, "facing_front")
+        front_dir = skin_dir / "views" / "facing_front"
+        _save(front_head, front_dir / "head.png")
+        _save(front_body, front_dir / "body.png")
+
+        def _view(folder: str, head_xy: tuple[int, int], body_xy: tuple[int, int], head: np.ndarray, body: np.ndarray, tilt: float) -> dict:
+            return {
+                "head": f"views/{folder}/head.png",
+                "body": f"views/{folder}/body.png",
+                "head_xy": list(head_xy),
+                "body_xy": list(body_xy),
+                "head_width": int(head.shape[1]),
+                "head_height": int(head.shape[0]),
+                "body_width": int(body.shape[1]),
+                "body_height": int(body.shape[0]),
+                "body_bottom_y": int(body_xy[1] + body.shape[0]),
+                "eye_y": 600,
+                "tilt_deg": tilt,
+                "status": "pending_approval",
+            }
+
+        manifest_path = skin_dir / "puppet.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+        manifest.update({
+            "character_id": character_id,
+            "name": name,
+            "skin_version": "v1-ingested",
+            "framing_contract": "dock_socket",
+            "views": {
+                "facing_left": _view("facing_left", left_head_xy, left_body_xy, left_head, left_body, -3.5),
+                "facing_front": _view("facing_front", front_head_xy, front_body_xy, front_head, front_body, 0.0),
+                "facing_right": _view("facing_right", right_head_xy, right_body_xy, right_head, right_body, 3.5),
+            },
+        })
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        panorama = Image.open(ensure_shared_panorama(puppets_dir=DEFAULT_PUPPETS_DIR)).convert("RGB")
+        library = panorama.crop((panorama.width // 2, 0, panorama.width, panorama.height))
+        backdrop = library.resize((1080, 1920), Image.Resampling.LANCZOS).convert("RGBA")
+        sheet = Image.new("RGB", (1080 * 3, 1920), (12, 10, 8))
+        try:
+            font = ImageFont.truetype("arialbd.ttf", 42)
+        except OSError:
+            font = ImageFont.load_default()
+        panels = (
+            ("LEFT", left_dir, left_head_xy, left_body_xy),
+            ("FRONT", front_dir, front_head_xy, front_body_xy),
+            ("RIGHT", right_dir, right_head_xy, right_body_xy),
+        )
+        for index, (label, folder, head_xy, body_xy) in enumerate(panels):
+            panel = backdrop.copy()
+            _composite_at(panel, Image.open(folder / "body.png").convert("RGBA"), body_xy[0], body_xy[1])
+            _composite_at(panel, Image.open(folder / "head.png").convert("RGBA"), head_xy[0], head_xy[1])
+            draw = ImageDraw.Draw(panel)
+            draw.rectangle((36, 28, 280, 96), fill=(18, 12, 8, 210))
+            draw.text((52, 40), label, fill=(244, 214, 150, 255), font=font)
+            sheet.paste(panel.convert("RGB"), (index * 1080, 0))
+        destination = outputs_root() / "aiwake" / "_test_harness" / f"{character_id.split('_cyborg', 1)[0]}_trinity_complete.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        sheet.save(destination, format="PNG", compress_level=1)
+        print(f"ingested-right: {right_dir}")
+        print(f"ingested-left: {left_dir}")
+        print(f"ingested-front: {front_dir}")
+        print(f"ingestion-preview: {destination}")
+        return destination
+
+    def generate_decoupled_candidates(self, character_id: str) -> Path:
+        """Generate untouched assets; delegate every scale and dock operation."""
+        from PIL import ImageDraw, ImageFont
+
+        from core.animator.asset_generator import DEFAULT_PUPPETS_DIR, ensure_shared_panorama
+        from .puppet_assembler import (
+            crop_alpha,
+            dock_socket,
+            safe_rotate,
+            scale_body,
+            scale_head,
+        )
+
+        if character_id != "chatgpt_cyborg_v1":
+            raise SystemExit(f"decoupled execution is not wired for {character_id}")
+        skin_dir = assets_root() / "puppets" / character_id
+        view_dir = skin_dir / "views" / "facing_left"
+        manifest_path = skin_dir / "puppet.json"
+        locked = (view_dir / "head.png", view_dir / "body.png", manifest_path)
+        if any(not path.is_file() for path in locked):
+            raise SystemExit(f"production ChatGPT layers missing under {view_dir}")
+        stamps = {path: (path.stat().st_mtime_ns, path.stat().st_size) for path in locked}
+        prompts = (
+            ("A", DECOUPLED_A_HEAD_PROMPT, DECOUPLED_A_BODY_PROMPT),
+            ("B", DECOUPLED_B_HEAD_PROMPT, DECOUPLED_B_BODY_PROMPT),
+            ("C", DECOUPLED_C_HEAD_PROMPT, DECOUPLED_C_BODY_PROMPT),
+        )
+        panorama = Image.open(ensure_shared_panorama(puppets_dir=DEFAULT_PUPPETS_DIR)).convert("RGB")
+        library = panorama.crop((panorama.width // 2, 0, panorama.width, panorama.height))
+        backdrop = library.resize((1080, 1920), Image.Resampling.LANCZOS).convert("RGBA")
+        try:
+            font = ImageFont.truetype("arialbd.ttf", 42)
+        except OSError:
+            font = ImageFont.load_default()
+        panels: list[Image.Image] = []
+        for key, head_prompt, body_prompt in prompts:
+            slot = skin_dir / "candidates" / f"decoupled_{key.lower()}"
+            slot.mkdir(parents=True, exist_ok=True)
+            raw_head_path = slot / "source_head.png"
+            raw_body_path = slot / "source_body.png"
+            # These are the exact constants above; no mutation or negative suffix.
+            generate_character_image(head_prompt, raw_head_path, aspect_ratio="1:1")
+            generate_character_image(body_prompt, raw_body_path, aspect_ratio="9:16")
+            with Image.open(raw_head_path) as opened:
+                head_master = crop_alpha(np.asarray(birefnet_cutout(opened.convert("RGB"))))
+            with Image.open(raw_body_path) as opened:
+                body_master = crop_alpha(np.asarray(birefnet_cutout(opened.convert("RGB"))))
+            Image.fromarray(head_master).save(slot / "_head_master.png", format="PNG", compress_level=1)
+            Image.fromarray(body_master).save(slot / "_body_master.png", format="PNG", compress_level=1)
+            head = scale_head(head_master, target_h=710)
+            head = safe_rotate(head, 3.5)
+            body = scale_body(body_master, head.shape[1], ratio=1.40)
+            head, body, head_xy, body_xy = dock_socket(head, body, "facing_left")
+            Image.fromarray(head).save(slot / "head.png", format="PNG", compress_level=1)
+            Image.fromarray(body).save(slot / "body.png", format="PNG", compress_level=1)
+            panel = backdrop.copy()
+            _composite_at(panel, Image.fromarray(body), body_xy[0], body_xy[1])
+            _composite_at(panel, Image.fromarray(head), head_xy[0], head_xy[1])
+            draw = ImageDraw.Draw(panel)
+            draw.rectangle((36, 28, 360, 96), fill=(18, 12, 8, 210))
+            draw.text((52, 40), f"OPTION {key}", fill=(244, 214, 150, 255), font=font)
+            panels.append(panel.convert("RGB"))
+            collar_y = body_xy[1] + int(body.shape[0] * 0.17)
+            chin_y = head_xy[1] + int(head.shape[0] * 0.95)
+            print(
+                f"decoupled {key} head={head.shape[1]}x{head.shape[0]} "
+                f"body={body.shape[1]}x{body.shape[0]} head_xy={head_xy} "
+                f"body_xy={body_xy} overlap={chin_y - collar_y}px "
+                f"bottom={body_xy[1] + body.shape[0]}"
+            )
+        for path, stamp in stamps.items():
+            if (path.stat().st_mtime_ns, path.stat().st_size) != stamp:
+                raise RuntimeError(f"production file changed: {path}")
+        sheet = Image.new("RGB", (1080 * len(panels), 1920), (12, 10, 8))
+        for index, panel in enumerate(panels):
+            sheet.paste(panel, (index * 1080, 0))
+        destination = outputs_root() / "aiwake" / "_test_harness" / "chatgpt_3_candidates_preview.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        sheet.save(destination, format="PNG", compress_level=1)
+        print(f"decoupled: {destination}")
         return destination
 
     def generate_tin_man_candidates(
@@ -3551,6 +3873,75 @@ def _seat_view(
     return (int(head_x), int(head_y)), (int(body_x), int(body_y))
 
 
+def _reference_with_chin_margin(source: Path, destination: Path, head_frac: float = 0.78) -> None:
+    """Place the head on magenta with empty space under the chin so the model does not slice it."""
+    with Image.open(source) as opened:
+        art = opened.convert("RGBA")
+    width, height = art.size
+    side = max(width + 48, int(round(height / head_frac)))
+    target_h = int(round(side * head_frac))
+    scale = target_h / max(1, height)
+    target_w = max(1, int(round(width * scale)))
+    if target_w > side - 48:
+        target_w = side - 48
+        target_h = max(1, int(round(height * (target_w / max(1, width)))))
+    resized = art.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    plate = Image.new("RGBA", (side, side), (255, 0, 255, 255))
+    plate.alpha_composite(resized, ((side - target_w) // 2, int(side * 0.04)))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    plate.convert("RGB").save(destination, format="PNG", compress_level=1)
+
+
+def _generate_intact_head(prompt: str, destination: Path, reference: Path, *, attempts: int = 3) -> np.ndarray:
+    """Generate a head and refuse any result whose chin is a flat cut."""
+    from .puppet_assembler import chin_is_clipped, crop_alpha
+
+    last_flat = 0
+    for attempt in range(1, attempts + 1):
+        generate_character_image(prompt, destination, aspect_ratio="1:1", reference_path=reference)
+        with Image.open(destination) as opened:
+            raw = np.asarray(birefnet_cutout(opened.convert("RGB")))
+        if not chin_is_clipped(raw):
+            print(f"chin-intact attempt {attempt}: {destination.name}")
+            return crop_alpha(raw)
+        alpha = raw[..., 3]
+        ys, xs = np.nonzero(alpha > 8)
+        cropped = alpha[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1]
+        run = best = 0
+        for opaque in cropped[-1] > 8:
+            if opaque:
+                run += 1
+                best = max(best, run)
+            else:
+                run = 0
+        last_flat = best
+        print(f"chin-clipped attempt {attempt}: flat_run={best}px")
+    raise RuntimeError(f"refusing a clipped chin on {destination.name}; longest flat run {last_flat}px")
+
+
+def _frontal_body_reference(left_body: Path, right_body: Path, destination: Path) -> None:
+    """Place the approved side bodies together so the frontal pass cannot copy just one angle."""
+    def _fit(path: Path, target_h: int = 900) -> Image.Image:
+        with Image.open(path) as opened:
+            art = opened.convert("RGBA")
+        scale = target_h / max(1, art.height)
+        return art.resize((max(1, int(art.width * scale)), target_h), Image.Resampling.LANCZOS)
+
+    left = _fit(left_body)
+    right = _fit(right_body)
+    gap = 48
+    plate = Image.new("RGBA", (left.width + right.width + gap + 80, left.height + 80), (255, 0, 255, 255))
+    plate.alpha_composite(left, (40, 40))
+    plate.alpha_composite(right, (40 + left.width + gap, 40))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    plate.convert("RGB").save(destination, format="PNG", compress_level=1)
+
+
+def _generate_frontal_body(prompt: str, destination: Path, reference: Path) -> None:
+    """Generate a headless frontal chassis from the side-view reference plate."""
+    generate_character_image(prompt, destination, aspect_ratio="9:16", reference_path=reference)
+
+
 def _flatten_on_magenta(source: Path, destination: Path) -> None:
     """Lay a transparent head on flat magenta for the Flash reference input."""
     with Image.open(source) as opened:
@@ -3652,6 +4043,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--blank-face-candidates", action="store_true")
     parser.add_argument("--proven-communicator", action="store_true")
     parser.add_argument("--verify-health", action="store_true")
+    parser.add_argument("--decoupled-execution", action="store_true")
+    parser.add_argument("--setup-ingestion", default="")
+    parser.add_argument("--ingest-master", default="")
+    parser.add_argument("--source-facing", default="right", choices=("left", "right"))
     parser.add_argument("--regenerate-head-only", action="store_true")
     parser.add_argument("--blank-viseme-plate", action="store_true")
     parser.add_argument("--create", default="")
@@ -3693,6 +4088,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.setup_ingestion:
+        print(OneShotPuppetFactory().setup_ingestion(args.setup_ingestion))
+        return 0
+    if args.ingest_master:
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+        preview = OneShotPuppetFactory().ingest_master(args.ingest_master, args.source_facing)
+        print(preview)
+        return 0
+    if args.decoupled_execution:
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+        if not args.character_id:
+            raise SystemExit("--decoupled-execution requires --character-id")
+        preview = OneShotPuppetFactory().generate_decoupled_candidates(args.character_id)
+        print(preview)
+        return 0
     if args.verify_health:
         if not args.character_id:
             raise SystemExit("--verify-health requires --character-id")

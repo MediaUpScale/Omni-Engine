@@ -128,6 +128,27 @@ def crop_alpha(img: np.ndarray) -> np.ndarray:
     return img[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1]
 
 
+def chin_is_clipped(img: np.ndarray, *, max_flat_px: int = 80) -> bool:
+    """True when the chin ends in a long flat cut instead of a rounded contour.
+
+    A rounded chin touches the bottom row for only a few pixels. A sliced chin
+    leaves a wide opaque run on that row. Callers must reject the image.
+    """
+    alpha = img[..., 3]
+    ys, xs = np.nonzero(alpha > 8)
+    if xs.size == 0:
+        return True
+    cropped = alpha[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1]
+    run = best = 0
+    for opaque in cropped[-1] > 8:
+        if opaque:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return best >= int(max_flat_px)
+
+
 def safe_rotate(img: np.ndarray, angle: float) -> np.ndarray:
     """Rotate with a 120px pad so the contour is not clipped."""
     return safe_rotate_head(img, angle)
@@ -157,16 +178,20 @@ def dock_socket(
     pivot_x = head.shape[1] // 2
     head_y = 600 - int(head.shape[0] * 0.42)
     head_x = stage_x - pivot_x
-    collar_rim_y = int(body.shape[0] * 0.17)
     chin_y = int(head.shape[0] * 0.95)
-    body_x = (head_x + pivot_x) - int(body.shape[1] * collar_ratio)
-    body_y = (head_y + chin_y) - collar_rim_y - 25
-    if body_y + body.shape[0] < 1920:
+    chin_canvas_y = head_y + chin_y
+    # Ground from the collar anchor. Resizing after body_y is calculated would
+    # move the collar and reopen a daylight gap.
+    minimum_h = int(np.ceil((1920 - (chin_canvas_y - 25)) / 0.83))
+    if body.shape[0] < minimum_h:
         body = cv2.resize(
             body,
-            (int(body.shape[1]), 1920 - int(body_y)),
+            (int(body.shape[1]), minimum_h),
             interpolation=cv2.INTER_LANCZOS4,
         )
+    collar_rim_y = int(body.shape[0] * 0.17)
+    body_x = (head_x + pivot_x) - int(body.shape[1] * collar_ratio)
+    body_y = chin_canvas_y - collar_rim_y - 25
     return head, body, (int(head_x), int(head_y)), (int(body_x), int(body_y))
 
 
